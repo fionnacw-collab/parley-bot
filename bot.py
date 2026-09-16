@@ -1,13 +1,13 @@
 """
-bot.py — Deep Football & Parlay Analysis Telegram Bot with 24/7 Cloud Support.
+bot.py — Deep Football & Parlay Analysis Telegram Bot with 24/7 Cloud Support & Interactive Menu System.
 Integrates:
-- OpenAI Vision for bet slip screenshot reading
+- Google Gemini (Free) & OpenAI Vision for PDF/image slip extraction
 - Bivariate Poisson xG modeling & true probability estimation
 - Bookmaker market consensus & zero-vig fair odds
-- Deep qualitative AI tactical analysis (GPT-4o)
+- Deep qualitative AI tactical analysis
 - Expected Value (+EV) & Fractional Kelly staking
-- Interactive Telegram Inline UI
-- Built-in HTTP health check server for 24/7 cloud hosting (Render / Railway / Koyeb)
+- Interactive Telegram Inline & Reply Keyboard Menu System
+- Built-in HTTP health check server for 24/7 cloud hosting
 """
 
 from __future__ import annotations
@@ -20,7 +20,14 @@ import os
 import sys
 import time
 
-from telegram import Update
+from telegram import (
+    BotCommand,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    Update,
+)
 from telegram.error import BadRequest
 from telegram.ext import (
     Application,
@@ -32,7 +39,7 @@ from telegram.ext import (
 )
 
 from config import settings
-from models import Leg, ParlayAnalysisReport
+from models import Leg, MarketCategory, ParlayAnalysisReport
 from parser import parse_legs
 from vision import extract_legs_from_image, extract_legs_from_pdf
 from analyzer_engine import analyze_parlay
@@ -46,6 +53,32 @@ logger = logging.getLogger("ParleyBot")
 
 # In-memory storage for user analysis sessions: chat_id -> ParlayAnalysisReport
 _ACTIVE_REPORTS: dict[int, ParlayAnalysisReport] = {}
+
+# ---------------------------------------------------------------------------
+# Persistent Bottom Reply Keyboard
+# ---------------------------------------------------------------------------
+MAIN_REPLY_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        [KeyboardButton("⚽ Contoh Parlay (Demo)"), KeyboardButton("📄 Cara Kirim PDF / Foto")],
+        [KeyboardButton("📊 Status Server & AI"), KeyboardButton("📖 Panduan Lengkap")],
+        [KeyboardButton("🗑 Reset Sesi")],
+    ],
+    resize_keyboard=True,
+    is_persistent=True,
+)
+
+
+def get_main_menu_keyboard() -> InlineKeyboardMarkup:
+    """Inline keyboard for dashboard navigation."""
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("⚽ Analisis Contoh Parlay 3-Laga (1-Klik)", callback_data="menu_demo")],
+            [InlineKeyboardButton("📄 Panduan Kirim File PDF / Foto", callback_data="menu_pdf_guide")],
+            [InlineKeyboardButton("📊 Cek Status AI & Server", callback_data="menu_status")],
+            [InlineKeyboardButton("📖 Panduan Metrik (+EV, Kelly, xG)", callback_data="menu_help")],
+            [InlineKeyboardButton("🗑 Reset Sesi Analisis", callback_data="menu_clear")],
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -64,11 +97,25 @@ async def safe_reply(
         return
 
     try:
-        await target.reply_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+        if update.callback_query:
+            await update.callback_query.message.reply_text(
+                text,
+                reply_markup=reply_markup,
+                parse_mode=parse_mode,
+            )
+        else:
+            await target.reply_text(
+                text,
+                reply_markup=reply_markup,
+                parse_mode=parse_mode,
+            )
     except BadRequest as e:
-        if "can't parse entities" in str(e).lower() or "markdown" in str(e).lower():
-            logger.warning("Markdown parsing failed, sending plain text fallback")
-            await target.reply_text(text, parse_mode=None, reply_markup=reply_markup)
+        if "can't parse entities" in str(e).lower() and parse_mode:
+            logger.warning("Markdown parse error, falling back to plain text")
+            if update.callback_query:
+                await update.callback_query.message.reply_text(text, reply_markup=reply_markup, parse_mode=None)
+            else:
+                await target.reply_text(text, reply_markup=reply_markup, parse_mode=None)
         else:
             raise e
 
@@ -78,55 +125,66 @@ async def safe_reply(
 # ---------------------------------------------------------------------------
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /start command with rich greeting and instructions."""
+    """Handle /start command with rich dashboard menu."""
     text = (
         "🏆 *SELAMAT DATANG DI DEEP FOOTBALL & PARLAY ANALYZER* 🏆\n\n"
-        "Bot ini melakukan analisis pertandingan sepak bola dan tiket parlay dengan *kedalaman tingkat profesional*, "
-        "menggabungkan pemodelan matematika kuantitatif dan analisis taktis mendalam.\n\n"
-        "✨ *Fitur Utama:*\n"
-        "• 📐 *Model Poisson & xG:* Proyeksi gol ekspektasi dan skor probabilitas tertinggi.\n"
-        "• 📊 *True Probability & Nilai EV:* Menghitung Expected Value (+EV) bebas margin bandar.\n"
-        "• 💰 *Kelly Criterion Staking:* Rekomendasi alokasi modal terukur agar aman dari drawdown.\n"
-        "• 🧠 *AI Tactical Breakdown:* Analisis benturan gaya main, kelemahan taktis, dan peringatan jebakan bandar.\n"
-        "• 📷 *Vision Slip Parser:* Kirim screenshot tiket parlay, bot otomatis membaca semua taruhan!\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "🚀 *Cara Menggunakan:*\n\n"
-        "1️⃣ *Kirim Teks Tiket Parlay (Multi-Laga):*\n"
-        "`Arsenal vs Chelsea - Over 2.5 @1.85`\n"
-        "`Real Madrid vs Barcelona - Real Madrid @2.10`\n"
-        "`Inter vs Juventus - Under 2.5 @1.75`\n\n"
-        "2️⃣ *Kirim Foto / Dokumen PDF (Multi-Laga):*\n"
-        "• Kirim foto slip taruhan (SBOBET, Bet365, Parlay slip, dll).\n"
-        "• Atau kirim **1 file PDF** berisi kumpulan screenshot semua pertandingan! Bot akan membaca seluruh halaman dan menganalisis setiap laga otomatis.\n\n"
-        "3️⃣ *Analisis Cepat Satu Laga:*\n"
-        "`/analyze Arsenal vs Chelsea`\n\n"
-        "Ketik /help untuk panduan lengkap atau /status untuk memeriksa koneksi sistem."
+        "Bot ini melakukan analisis pertandingan sepak bola dan tiket parlay secara profesional, "
+        "menggabungkan model matematika kuantitatif (Poisson xG, True Probability, +EV, Kelly Staking) "
+        "dan analisa taktis mendalam berbasis AI.\n\n"
+        "✨ *Pilih menu di bawah atau kirim data langsung:*\n"
+        "• Kirim **1 file PDF** berisi kumpulan screenshot pertandingan.\n"
+        "• Kirim **foto screenshot** slip taruhan langsung.\n"
+        "• Kirim teks daftar laga: `Arsenal vs Chelsea - Over 2.5 @1.85`\n\n"
+        "Gunakan tombol menu di bawah untuk kemudahan navigasi 👇"
     )
-    await safe_reply(update, text)
+    if update.message:
+        await update.message.reply_text(
+            text,
+            reply_markup=MAIN_REPLY_KEYBOARD,
+            parse_mode="Markdown",
+        )
+        await update.message.reply_text(
+            "📋 *DASHBOARD MENU UTAMA:*",
+            reply_markup=get_main_menu_keyboard(),
+            parse_mode="Markdown",
+        )
+    else:
+        await safe_reply(update, text, reply_markup=get_main_menu_keyboard())
+
+
+async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /menu command displaying the interactive dashboard."""
+    text = (
+        "📋 *DASHBOARD MENU UTAMA*\n\n"
+        "Silakan pilih aksi yang ingin kamu lakukan:"
+    )
+    await safe_reply(update, text, reply_markup=get_main_menu_keyboard())
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /help command with detailed manual."""
     text = (
         "📖 *PANDUAN LENGKAP PENGGUNAAN BOT*\n\n"
-        "📌 *Format Teks yang Didukung:*\n"
-        "`Tim A vs Tim B - Pilihan @Odds`\n\n"
-        "Contoh variasi input:\n"
-        "• `Arsenal vs Chelsea - Over 2.5 @1.85`\n"
-        "• `Milan vs Inter - Draw @3.40`\n"
-        "• `Liverpool vs Man City - Both Teams to Score @1.65`\n"
-        "• `Bayern vs Dortmund - Bayern -1.5 @2.05`\n\n"
-        "📌 *Arti Istilah dalam Laporan:*\n"
-        "• *+EV (Expected Value):* Keuntungan matematis jangka panjang. Jika +EV positif (>0%), taruhan tersebut bernilai tinggi di atas harga bandar.\n"
-        "• *True Prob:* Probabilitas murni hasil simulasi model statistik (tanpa potongan komisi bandar).\n"
-        "• *Kelly Staking:* Persentase modal maksimal yang disarankan agar terhindar dari resiko bangkrut.\n"
-        "• *Core Anchor:* Laga paling stabil yang sangat direkomendasikan menjadi fondasi parlay kamu.\n\n"
-        "📸 *Tips Screenshot:* Pastikan gambar slip taruhan tidak blur dan nama tim serta pasaran terbaca jelas."
+        "📌 *1. Cara Kirim Tiket:*\n"
+        "• *File PDF (Disarankan):* Masukkan screenshot seluruh laga ke dalam 1 file PDF, lalu kirim ke bot. Bot membaca semua halaman otomatis.\n"
+        "• *Foto:* Kirim foto screenshot slip taruhan biasa.\n"
+        "• *Teks Manual:* `Tim A vs Tim B - Pilihan @Odds`\n"
+        "  Contoh: `Arsenal vs Chelsea - Over 2.5 @1.85`\n\n"
+        "📌 *2. Arti Istilah dalam Laporan:*\n"
+        "• *+EV (Expected Value):* Keuntungan matematis jangka panjang. Nilai positif (+EV) artinya odds bandar terlalu murah dibanding peluang aslinya.\n"
+        "• *True Prob:* Probabilitas murni hasil simulasi Poisson tanpa potongan komisi bandar.\n"
+        "• *Kelly Staking:* Rekomendasi alokasi modal maksimal agar terhindar dari resiko drawdown/bangkrut.\n"
+        "• *Core Anchor:* Laga paling solid yang sangat direkomendasikan menjadi fondasi parlay kamu.\n\n"
+        "💡 *Tips:* Klik tombol laga di bawah laporan untuk melihat ulasan taktik, kelemahan, dan jebakan bandar per pertandingan."
     )
-    await safe_reply(update, text)
+    back_kb = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🔙 Kembali ke Menu Utama", callback_data="menu_main")]]
+    )
+    await safe_reply(update, text, reply_markup=back_kb)
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /status command showing system diagnostics."""
     if settings.active_ai_provider == "gemini":
         ai_status = f"🟢 Google Gemini ({settings.gemini_model}) - 100% Gratis"
     elif settings.active_ai_provider == "openai":
@@ -134,8 +192,8 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         ai_status = "🟡 Mode Heuristik & Statistik Matematika"
 
-    rapid_status = "🟢 Terhubung" if settings.has_rapidapi else "🟡 Mode Fallback"
-    odds_status = "🟢 Terhubung" if settings.has_odds_api else "🟡 Mode Estimasi Sintetis"
+    rapid_status = "🟢 Terhubung" if settings.has_rapidapi else "🟡 Mode Fallback (Simulasi Kuat)"
+    odds_status = "🟢 Terhubung" if settings.has_odds_api else "🟡 Mode Benchmark Sintetis"
 
     text = (
         "⚡ *STATUS SISTEM BOT 24/7* ⚡\n\n"
@@ -146,7 +204,92 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• 💾 *Sesi Analisis Aktif:* {len(_ACTIVE_REPORTS)} pengguna\n\n"
         "Status: *Berjalan Normal 24/7 Non-Stop* ✅"
     )
-    await safe_reply(update, text)
+    back_kb = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🔙 Kembali ke Menu Utama", callback_data="menu_main")]]
+    )
+    await safe_reply(update, text, reply_markup=back_kb)
+
+
+async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clear active user analysis session."""
+    chat_id = update.effective_chat.id
+    if chat_id in _ACTIVE_REPORTS:
+        del _ACTIVE_REPORTS[chat_id]
+        msg = "🗑 *Sesi analisis berhasil direset.* Kamu siap mengirim tiket parlay atau pertandingan baru!"
+    else:
+        msg = "ℹ️ Tidak ada sesi analisis aktif saat ini. Silakan kirim tiket parlay atau file PDF baru."
+
+    back_kb = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("⚽ Mulai Contoh Parlay", callback_data="menu_demo")],
+            [InlineKeyboardButton("🔙 Menu Utama", callback_data="menu_main")],
+        ]
+    )
+    await safe_reply(update, msg, reply_markup=back_kb)
+
+
+async def cmd_pdf_guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show detailed guide on sending PDF files."""
+    text = (
+        "📄 *PANDUAN ANALISIS 1 FOLDER PDF*\n\n"
+        "Kamu tidak perlu mengirim screenshot satu per satu:\n\n"
+        "1️⃣ *Kumpulkan Screenshot:*\n"
+        "Ambil screenshot dari semua pertandingan atau tiket parlay yang ingin kamu pasang.\n\n"
+        "2️⃣ *Jadikan 1 File PDF:*\n"
+        "Gabungkan semua gambar tersebut ke dalam 1 file PDF (bisa pakai website gratis seperti *ilovepdf.com* atau fitur *Print to PDF* di HP).\n\n"
+        "3️⃣ *Kirim ke Bot:*\n"
+        "Cukup kirim file PDF tersebut ke chat ini sebagai dokumen. Bot akan otomatis:\n"
+        "• Membaca seluruh halaman PDF via AI Vision.\n"
+        "• Mengekstrak semua nama tim, pilihan taruhan, dan odds.\n"
+        "• Menganalisis setiap pertandingan satu per satu sekaligus!"
+    )
+    back_kb = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("⚽ Coba Contoh Analisis Dulu", callback_data="menu_demo")],
+            [InlineKeyboardButton("🔙 Kembali ke Menu Utama", callback_data="menu_main")],
+        ]
+    )
+    await safe_reply(update, text, reply_markup=back_kb)
+
+
+async def run_demo_parlay(update: Update):
+    """Run a live demonstration analysis for 3 real match picks."""
+    demo_legs = [
+        Leg(
+            home="Arsenal",
+            away="Chelsea",
+            pick="Over 2.5",
+            odds=1.85,
+            market=MarketCategory.OVER_UNDER,
+            raw="Arsenal vs Chelsea - Over 2.5 @1.85",
+        ),
+        Leg(
+            home="Real Madrid",
+            away="Barcelona",
+            pick="Real Madrid",
+            odds=2.10,
+            market=MarketCategory.MATCH_WINNER,
+            raw="Real Madrid vs Barcelona - Real Madrid @2.10",
+        ),
+        Leg(
+            home="Inter Milan",
+            away="Juventus",
+            pick="Under 2.5",
+            odds=1.75,
+            market=MarketCategory.OVER_UNDER,
+            raw="Inter Milan vs Juventus - Under 2.5 @1.75",
+        ),
+    ]
+    target = update.message if update.message else (update.callback_query.message if update.callback_query else None)
+    if target:
+        await target.reply_text(
+            "⚽ *Menjalankan Analisis Contoh Tiket Parlay (3-Laga):*\n"
+            "1. `Arsenal vs Chelsea` - Over 2.5 @1.85\n"
+            "2. `Real Madrid vs Barcelona` - Real Madrid @2.10\n"
+            "3. `Inter Milan vs Juventus` - Under 2.5 @1.75\n",
+            parse_mode="Markdown",
+        )
+    await execute_analysis_flow(update, demo_legs)
 
 
 async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -170,22 +313,41 @@ async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------------------------
-# Message & Photo Handlers
+# Message & Photo & Document Handlers
 # ---------------------------------------------------------------------------
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle incoming text messages."""
+    """Handle incoming text messages and persistent menu buttons."""
     text = update.message.text.strip()
     if not text:
         return
 
+    # Check for Reply Keyboard Button taps
+    if text in ("⚽ Contoh Parlay (Demo)", "/demo"):
+        await run_demo_parlay(update)
+        return
+    elif text == "📄 Cara Kirim PDF / Foto":
+        await cmd_pdf_guide(update, context)
+        return
+    elif text == "📊 Status Server & AI":
+        await cmd_status(update, context)
+        return
+    elif text == "📖 Panduan Lengkap":
+        await cmd_help(update, context)
+        return
+    elif text == "🗑 Reset Sesi":
+        await cmd_clear(update, context)
+        return
+
+    # Parse text as parlay ticket / match list
     legs = parse_legs(text)
     if not legs:
         await update.message.reply_text(
             "❌ Tidak ada pertandingan yang terdeteksi.\n\n"
-            "Gunakan format:\n"
+            "Gunakan format teks:\n"
             "`Arsenal vs Chelsea - Over 2.5 @1.85`\n\n"
-            "Atau kirim foto screenshot tiket taruhan kamu.",
+            "Atau kirim **file PDF / foto screenshot** tiket taruhan kamu.",
+            reply_markup=get_main_menu_keyboard(),
             parse_mode="Markdown",
         )
         return
@@ -194,7 +356,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle incoming screenshot photos using OpenAI Vision."""
+    """Handle incoming screenshot photos using AI Vision."""
     status_msg = await update.message.reply_text("🔍 *Membaca slip taruhan via AI Vision...*", parse_mode="Markdown")
 
     try:
@@ -215,6 +377,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 "❌ Gambar terbaca, namun tidak ada pertandingan atau pasaran yang terdeteksi.\n"
                 "Pastikan gambar menampilkan nama tim dan odds dengan jelas, atau ketik manual.",
+                reply_markup=get_main_menu_keyboard(),
                 parse_mode="Markdown",
             )
             return
@@ -227,7 +390,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.delete()
         except Exception:
             pass
-        await update.message.reply_text(f"❌ Gagal memproses gambar: {e}")
+        await update.message.reply_text(f"❌ Gagal memproses gambar: {e}", reply_markup=get_main_menu_keyboard())
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -249,6 +412,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📄 *Format file tidak didukung.*\n"
             "Silakan kirim file **PDF (.pdf)** berisi kompilasi screenshot pertandingan, "
             "atau kirim foto langsung.",
+            reply_markup=get_main_menu_keyboard(),
             parse_mode="Markdown",
         )
         return
@@ -281,6 +445,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 f"❌ Dokumen `{filename}`{page_info} terbaca, namun tidak ada pertandingan atau pasaran yang terdeteksi.\n"
                 "Pastikan dokumen menampilkan nama tim dan odds dengan jelas.",
+                reply_markup=get_main_menu_keyboard(),
                 parse_mode="Markdown",
             )
             return
@@ -299,21 +464,25 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.delete()
         except Exception:
             pass
-        await update.message.reply_text(f"❌ Gagal memproses dokumen `{filename}`: {e}")
+        await update.message.reply_text(f"❌ Gagal memproses dokumen `{filename}`: {e}", reply_markup=get_main_menu_keyboard())
+
+
 # ---------------------------------------------------------------------------
 # Pipeline Execution & Callback Queries
 # ---------------------------------------------------------------------------
 
 async def execute_analysis_flow(update: Update, legs: list[Leg]):
     """Execute deep multi-layer analysis and render the main parlay report."""
-    target_msg = update.message
-    status_msg = await target_msg.reply_text(
-        f"⏳ *Memproses analisis mendalam untuk {len(legs)} pertandingan...*\n"
-        f"• Menghitung Poisson Expected Goals (xG)...\n"
-        f"• Menghitung Expected Value (+EV) & Kelly Stake...\n"
-        f"• Mensintesis taktik & peluang pasar...",
-        parse_mode="Markdown",
-    )
+    target_msg = update.message if update.message else (update.callback_query.message if update.callback_query else None)
+    status_msg = None
+    if target_msg:
+        status_msg = await target_msg.reply_text(
+            f"⏳ *Memproses analisis mendalam untuk {len(legs)} pertandingan...*\n"
+            f"• Menghitung Poisson Expected Goals (xG)...\n"
+            f"• Menghitung Expected Value (+EV) & Kelly Stake...\n"
+            f"• Mensintesis taktik & peluang pasar...",
+            parse_mode="Markdown",
+        )
 
     try:
         report = await analyze_parlay(legs)
@@ -322,20 +491,22 @@ async def execute_analysis_flow(update: Update, legs: list[Leg]):
         chat_id = update.effective_chat.id
         _ACTIVE_REPORTS[chat_id] = report
 
-        try:
-            await status_msg.delete()
-        except Exception:
-            pass
+        if status_msg:
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
 
         summary_text, reply_markup = format_parlay_overview(report)
         await safe_reply(update, summary_text, reply_markup=reply_markup)
 
     except Exception as e:
         logger.exception("Analysis pipeline error")
-        try:
-            await status_msg.delete()
-        except Exception:
-            pass
+        if status_msg:
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
         await safe_reply(update, f"❌ Terjadi kesalahan saat menganalisis: {e}", parse_mode=None)
 
 
@@ -347,11 +518,41 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     data = query.data
     chat_id = update.effective_chat.id
 
+    # 1. Global Menu Actions (do not require active report)
+    if data == "menu_main":
+        text = "📋 *DASHBOARD MENU UTAMA*\n\nSilakan pilih menu di bawah:"
+        try:
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=get_main_menu_keyboard())
+        except Exception:
+            await safe_reply(update, text, reply_markup=get_main_menu_keyboard())
+        return
+
+    elif data == "menu_demo":
+        await run_demo_parlay(update)
+        return
+
+    elif data == "menu_pdf_guide":
+        await cmd_pdf_guide(update, context)
+        return
+
+    elif data == "menu_status":
+        await cmd_status(update, context)
+        return
+
+    elif data == "menu_help":
+        await cmd_help(update, context)
+        return
+
+    elif data == "menu_clear":
+        await cmd_clear(update, context)
+        return
+
+    # 2. Report Drill-down Navigation (requires active report)
     report = _ACTIVE_REPORTS.get(chat_id)
     if not report:
         await query.edit_message_text(
             "⚠️ Sesi analisis sudah kedaluwarsa. Silakan kirim tiket atau pertandingan baru.",
-            reply_markup=None,
+            reply_markup=get_main_menu_keyboard(),
         )
         return
 
@@ -451,10 +652,28 @@ async def main():
     # 2. Build Telegram Application
     app = Application.builder().token(settings.telegram_bot_token).build()
 
+    # Set up Telegram native menu commands list
+    try:
+        commands = [
+            BotCommand("start", "Mulai & Tampilkan Menu Utama"),
+            BotCommand("menu", "Buka Dashboard Menu Pilihan"),
+            BotCommand("demo", "Analisis Contoh Parlay (1-Klik)"),
+            BotCommand("status", "Cek Status AI & Server"),
+            BotCommand("help", "Panduan Penggunaan Lengkap"),
+            BotCommand("clear", "Reset Sesi Analisis"),
+        ]
+        await app.bot.set_my_commands(commands)
+        logger.info("✅ Telegram Bot Commands Menu berhasil didaftarkan.")
+    except Exception as e:
+        logger.warning(f"Could not register Telegram commands: {e}")
+
     # Register Handlers
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("menu", cmd_menu))
+    app.add_handler(CommandHandler("demo", lambda u, c: run_demo_parlay(u)))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("clear", cmd_clear))
     app.add_handler(CommandHandler("analyze", cmd_analyze))
 
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
