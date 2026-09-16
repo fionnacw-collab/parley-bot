@@ -28,8 +28,8 @@ class Settings:
     host: str = os.getenv("HOST", "0.0.0.0")
 
     # AI Models & Provider ('gemini', 'openai', or 'auto')
-    ai_provider: str = os.getenv("AI_PROVIDER", "auto")
-    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    ai_provider: str = os.getenv("AI_PROVIDER", "gemini")
+    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
     openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
     # Analysis Defaults

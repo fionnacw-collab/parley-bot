@@ -70,24 +70,34 @@ def _parse_tactical_json(raw: str) -> tuple[TacticalReport, str, str]:
 
 
 async def _generate_gemini_tactical(user_payload: dict) -> tuple[TacticalReport, str, str]:
-    """Generate tactical analysis with Google Gemini."""
+    """Generate tactical analysis with Google Gemini with automatic failover."""
     from google import genai
     from google.genai import types
 
     client = genai.Client(api_key=settings.gemini_api_key)
     prompt = f"{_SYSTEM_PROMPT}\n\nMatch Data:\n{json.dumps(user_payload, indent=2)}"
 
-    response = await client.aio.models.generate_content(
-        model=settings.gemini_model,
-        contents=[prompt],
-        config=types.GenerateContentConfig(
-            temperature=0.3,
-            response_mime_type="application/json",
-        ),
-    )
-    raw = response.text or "{}"
-    return _parse_tactical_json(raw)
+    candidate_models = [settings.gemini_model, "gemini-3.6-flash", "gemini-3.7-flash", "gemini-flash-latest"]
+    last_err = None
 
+    for model_name in candidate_models:
+        try:
+            response = await client.aio.models.generate_content(
+                model=model_name,
+                contents=[prompt],
+                config=types.GenerateContentConfig(
+                    temperature=0.3,
+                    response_mime_type="application/json",
+                ),
+            )
+            raw = response.text or "{}"
+            return _parse_tactical_json(raw)
+        except Exception as e:
+            last_err = e
+            logger.warning(f"Gemini tactical model {model_name} failed ({e}), trying next...")
+            continue
+
+    raise last_err or ValueError("Gagal menghasilkan analisa taktis dari Gemini.")
 
 async def _generate_openai_tactical(user_payload: dict) -> tuple[TacticalReport, str, str]:
     """Generate tactical analysis with OpenAI."""

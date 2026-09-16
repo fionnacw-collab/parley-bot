@@ -91,7 +91,7 @@ def _parse_legs_json(raw: str) -> list[Leg]:
 
 
 async def _extract_legs_gemini(images: list[bytes]) -> list[Leg]:
-    """Extract legs using Google Gemini Vision."""
+    """Extract legs using Google Gemini Vision with automatic model failover."""
     from google import genai
     from google.genai import types
 
@@ -101,18 +101,27 @@ async def _extract_legs_gemini(images: list[bytes]) -> list[Leg]:
     for img_bytes in images:
         contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/png"))
 
-    response = await client.aio.models.generate_content(
-        model=settings.gemini_model,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            temperature=0.1,
-            response_mime_type="application/json",
-        ),
-    )
+    candidate_models = [settings.gemini_model, "gemini-3.6-flash", "gemini-3.7-flash", "gemini-flash-latest"]
+    last_err = None
 
-    raw = response.text or "[]"
-    return _parse_legs_json(raw)
+    for model_name in candidate_models:
+        try:
+            response = await client.aio.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    temperature=0.1,
+                    response_mime_type="application/json",
+                ),
+            )
+            raw = response.text or "[]"
+            return _parse_legs_json(raw)
+        except Exception as e:
+            last_err = e
+            logger.warning(f"Gemini model {model_name} failed ({e}), trying next candidate...")
+            continue
 
+    raise last_err or ValueError("Gagal mengekstrak data dari Gemini Vision.")
 
 async def _extract_legs_openai(images: list[bytes]) -> list[Leg]:
     """Extract legs using OpenAI Vision."""
