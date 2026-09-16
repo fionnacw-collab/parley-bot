@@ -6,23 +6,66 @@ deploy_hf.py — Otomatisasi deploy bot ke Hugging Face Spaces (Docker).
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
-from dotenv import load_dotenv
 
-load_dotenv()
+
+def load_env_manually():
+    """Manual fallback to load .env without requiring python-dotenv."""
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        k = k.strip()
+                        v = v.strip().strip("'\"")
+                        if k not in os.environ:
+                            os.environ[k] = v
+        except Exception:
+            pass
+
+
+def ensure_dependencies():
+    """Ensure required packages are installed."""
+    required = ["huggingface_hub", "python-dotenv"]
+    missing = []
+    for pkg in required:
+        try:
+            __import__(pkg.replace("-", "_"))
+        except ImportError:
+            missing.append(pkg)
+
+    if missing:
+        print(f"📦 Menginstall dependensi yang dibutuhkan: {', '.join(missing)}...")
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", *missing])
+            print("✅ Dependensi berhasil diinstall.\n")
+        except Exception as e:
+            print(f"⚠️ Gagal otomatis install dependensi ({e}). Silakan jalankan: pip install {' '.join(missing)}")
 
 
 def main():
-    print("=" * 60)
-    print("🚀 AUTOMATIC DEPLOY KE HUGGING FACE SPACES (100% GRATIS)")
-    print("=" * 60)
+    load_env_manually()
+    ensure_dependencies()
+
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass
 
     try:
         from huggingface_hub import HfApi, create_repo
     except ImportError:
-        print("Menginstall library huggingface_hub...")
-        os.system(f"{sys.executable} -m pip install huggingface_hub")
-        from huggingface_hub import HfApi, create_repo
+        print("❌ Gagal memuat library huggingface_hub. Pastikan internet aktif dan coba lagi.")
+        return
+
+    print("=" * 60)
+    print("🚀 AUTOMATIC DEPLOY KE HUGGING FACE SPACES (100% GRATIS)")
+    print("=" * 60)
 
     # 1. Dapatkan Token HF
     hf_token = os.getenv("HF_TOKEN")
