@@ -679,7 +679,11 @@ async def execute_analysis_flow(update: Update, legs: list[Leg]):
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle interactive inline keyboard navigation across all features."""
     query = update.callback_query
-    await query.answer()
+    if query:
+        try:
+            await query.answer()
+        except Exception:
+            pass
 
     data = query.data
     chat_id = update.effective_chat.id
