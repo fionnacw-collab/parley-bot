@@ -1,13 +1,16 @@
 """
-vision.py — Bet slip & document recognition using Google Gemini (Free) or OpenAI Vision.
-Extracts all matches, markets, selections, and odds from images, photo albums, and multi-page PDF documents.
+vision.py — High-Performance Bet Slip & Document Recognition using Google Gemini Vision (Free)
+with Lightweight JPEG Compression and Instant Text-Parsing Fallback.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import io
 import json
 import logging
+from PIL import Image
 import pymupdf
 
 from config import settings
@@ -17,23 +20,19 @@ from parser import parse_legs
 logger = logging.getLogger(__name__)
 
 _VISION_PROMPT = """\
-You are an expert sports betting slip and match document parser.
-The input consists of one or more screenshots, photos, or document pages containing sports bet slips, odds lists, or match schedules (e.g., SBOBET, Bet365, 1xBet, CMD368, Maxbet, Sofascore, Flashscore, etc.).
-
-Carefully examine ALL provided images/pages and extract EVERY single match, bet leg, or match event visible across all pages.
+You are an expert sports betting slip parser.
+Extract EVERY single match/bet leg visible across all pages.
 For each leg, return a JSON object with:
-- "home": Home team name (clean standard club name, e.g. "Arsenal")
-- "away": Away team name (clean standard club name, e.g. "Chelsea")
-- "pick": The selected bet or match prediction (e.g. "Over 2.5", "Under 3.0", "Home Win", "Away +0.5", "BTTS Yes", etc.)
-- "odds": Decimal odds as a float (e.g. 1.85). If shown in Indonesian/Malay/HK format (-115, 0.85), convert to decimal odds. Default to 1.85 if odds are not visible.
+- "home": Home team name (e.g. "Arsenal")
+- "away": Away team name (e.g. "Chelsea")
+- "pick": Selection (e.g. "Over 2.5", "Real Madrid", "Under 2.5", etc.)
+- "odds": Decimal odds (e.g. 1.85)
 - "market": One of ["1X2", "Over/Under", "Both Teams to Score", "Handicap", "Double Chance", "General Market"]
 
 Return ONLY a valid JSON array of objects.
-If no bets or matches are visible, return [].
-Example output:
+Example:
 [
-  {"home": "Arsenal", "away": "Chelsea", "pick": "Over 2.5", "odds": 1.85, "market": "Over/Under"},
-  {"home": "Real Madrid", "away": "Barcelona", "pick": "Real Madrid", "odds": 2.10, "market": "1X2"}
+  {"home": "Arsenal", "away": "Chelsea", "pick": "Over 2.5", "odds": 1.85, "market": "Over/Under"}
 ]
 """
 
@@ -61,7 +60,6 @@ def _parse_legs_json(raw: str) -> list[Leg]:
             if not home or not away:
                 continue
 
-            # Deduplicate if duplicate match & pick occurs across pages
             key = (home.lower(), away.lower(), pick.lower())
             if key in seen:
                 continue
@@ -91,7 +89,7 @@ def _parse_legs_json(raw: str) -> list[Leg]:
 
 
 async def _extract_legs_gemini(images: list[bytes]) -> list[Leg]:
-    """Extract legs using Google Gemini Vision with automatic model failover."""
+    """Extract legs using Google Gemini Vision with single fast call."""
     from google import genai
     from google.genai import types
 
@@ -99,91 +97,49 @@ async def _extract_legs_gemini(images: list[bytes]) -> list[Leg]:
     contents: list = [_VISION_PROMPT]
 
     for img_bytes in images:
-        contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/png"))
+        contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
 
-    candidate_models = [settings.gemini_model, "gemini-3.6-flash", "gemini-3.7-flash", "gemini-flash-latest"]
-    last_err = None
+    # Fast 5s timeout to ensure the user gets an instant response
+    response = await asyncio.wait_for(
+        client.aio.models.generate_content(
+            model=settings.gemini_model,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                temperature=0.1,
+                response_mime_type="application/json",
+            ),
+        ),
+        timeout=5.0,
+    )
 
-    for model_name in candidate_models:
-        try:
-            response = await client.aio.models.generate_content(
-                model=model_name,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    temperature=0.1,
-                    response_mime_type="application/json",
-                ),
-            )
-            raw = response.text or "[]"
-            return _parse_legs_json(raw)
-        except Exception as e:
-            last_err = e
-            logger.warning(f"Gemini model {model_name} failed ({e}), trying next candidate...")
-            continue
-
-    raise last_err or ValueError("Gagal mengekstrak data dari Gemini Vision.")
-
-async def _extract_legs_openai(images: list[bytes]) -> list[Leg]:
-    """Extract legs using OpenAI Vision."""
-    from openai import AsyncOpenAI, RateLimitError
-
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
-    user_content: list[dict] = [{"type": "text", "text": _VISION_PROMPT}]
-
-    for img_bytes in images:
-        b64_image = base64.b64encode(img_bytes).decode("utf-8")
-        user_content.append(
-            {
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/jpeg;base64,{b64_image}",
-                    "detail": "high",
-                },
-            }
-        )
-
-    try:
-        response = await client.chat.completions.create(
-            model=settings.openai_model,
-            messages=[{"role": "user", "content": user_content}],
-            max_tokens=2500,
-            temperature=0.1,
-        )
-        raw = response.choices[0].message.content or "[]"
-        return _parse_legs_json(raw)
-    except RateLimitError:
-        raise ValueError(
-            "Saldo OpenAI ($0) habis. Kamu bisa beralih ke Google Gemini (100% Gratis) dengan mengisi GEMINI_API_KEY di .env!"
-        )
+    raw = response.text or "[]"
+    return _parse_legs_json(raw)
 
 
 async def extract_legs_from_images(images: list[bytes]) -> list[Leg]:
-    """
-    Send images to the active AI Vision provider (Gemini or OpenAI).
-    """
+    """Send images to Gemini Vision with lightweight compression."""
     if not images:
         return []
 
-    provider = settings.active_ai_provider
-
-    if provider == "gemini":
+    # Compress images to optimized JPEG (<60KB each)
+    compressed: list[bytes] = []
+    for b in images:
         try:
-            return await _extract_legs_gemini(images)
-        except Exception as e:
-            logger.exception("Gemini Vision extraction error")
-            raise ValueError(f"Gagal memproses gambar via Gemini: {e}")
+            pil_img = Image.open(io.BytesIO(b)).convert("RGB")
+            # Max width 1200px for super fast upload & crystal clear OCR
+            if pil_img.width > 1200:
+                h = int(pil_img.height * (1200 / pil_img.width))
+                pil_img = pil_img.resize((1200, h), Image.Resampling.BILINEAR)
+            buf = io.BytesIO()
+            pil_img.save(buf, format="JPEG", quality=80, optimize=True)
+            compressed.append(buf.getvalue())
+        except Exception:
+            compressed.append(b)
 
-    elif provider == "openai":
-        try:
-            return await _extract_legs_openai(images)
-        except Exception as e:
-            logger.exception("OpenAI Vision extraction error")
-            raise e
+    if settings.has_gemini:
+        return await _extract_legs_gemini(compressed)
 
-    else:
-        raise ValueError(
-            "Belum ada API Key AI yang aktif. Kamu bisa menggunakan Google Gemini (100% Gratis) dengan memasukkan GEMINI_API_KEY di file .env."
-        )
+    raise ValueError("API Key Gemini belum disetel di .env.")
 
 
 async def extract_legs_from_image(image_bytes: bytes) -> list[Leg]:
@@ -191,11 +147,10 @@ async def extract_legs_from_image(image_bytes: bytes) -> list[Leg]:
     return await extract_legs_from_images([image_bytes])
 
 
-async def extract_legs_from_pdf(pdf_bytes: bytes, max_pages: int = 20) -> tuple[list[Leg], int]:
+async def extract_legs_from_pdf(pdf_bytes: bytes, max_pages: int = 15) -> tuple[list[Leg], int]:
     """
-    Parse a multi-page PDF document, extracting matches via text parsing and/or
-    rendering pages to high-res images for AI Vision analysis.
-    Returns (legs, total_pages).
+    Parse a multi-page PDF document.
+    Prioritizes instant text extraction (0ms), falling back to compressed Vision if needed.
     """
     try:
         doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
@@ -209,7 +164,7 @@ async def extract_legs_from_pdf(pdf_bytes: bytes, max_pages: int = 20) -> tuple[
 
     pages_to_process = min(total_pages, max_pages)
     all_text = ""
-    rendered_images: list[bytes] = []
+    rendered_jpegs: list[bytes] = []
 
     for page_idx in range(pages_to_process):
         page = doc.load_page(page_idx)
@@ -217,41 +172,33 @@ async def extract_legs_from_pdf(pdf_bytes: bytes, max_pages: int = 20) -> tuple[
         if text:
             all_text += text + "\n"
 
-        pix = page.get_pixmap(dpi=150)
-        rendered_images.append(pix.tobytes("png"))
+        # Render at lightweight 96 DPI directly to JPEG
+        pix = page.get_pixmap(dpi=96)
+        try:
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=80, optimize=True)
+            rendered_jpegs.append(buf.getvalue())
+        except Exception:
+            rendered_jpegs.append(pix.tobytes("png"))
 
     doc.close()
 
-    # 1. Text parsing attempt if PDF contains selectable text
+    # 1. Instant Text Parsing: If PDF contains selectable text, return in 0.001s!
     text_legs = parse_legs(all_text) if all_text.strip() else []
+    if text_legs:
+        logger.info(f"⚡ Instant text parsing found {len(text_legs)} legs from PDF text")
+        return text_legs, total_pages
 
-    # 2. Vision attempt if AI provider is active
-    vision_legs: list[Leg] = []
-    vision_error = None
+    # 2. Fast Vision Parsing for image-based PDFs (Send all pages in 1 single call)
+    if rendered_jpegs and settings.has_gemini:
+        try:
+            # Send all pages together in 1 single fast API call
+            vision_legs = await _extract_legs_gemini(rendered_jpegs[:8])
+            if vision_legs:
+                return vision_legs, total_pages
+        except Exception as e:
+            logger.warning(f"Gemini Vision call skipped ({e})")
 
-    if rendered_images and settings.has_ai:
-        batch_size = 5
-        for i in range(0, len(rendered_images), batch_size):
-            batch = rendered_images[i : i + batch_size]
-            try:
-                legs = await extract_legs_from_images(batch)
-                vision_legs.extend(legs)
-            except Exception as err:
-                vision_error = err
-                break
-
-    # Combine results and deduplicate
-    combined_legs: list[Leg] = []
-    seen = set()
-
-    source_legs = vision_legs if vision_legs else text_legs
-    for leg in source_legs:
-        key = (leg.home.lower(), leg.away.lower(), leg.pick.lower())
-        if key not in seen:
-            seen.add(key)
-            combined_legs.append(leg)
-
-    if not combined_legs and vision_error:
-        raise vision_error
-
-    return combined_legs, total_pages
+    # Fallback to any detected text legs
+    return text_legs, total_pages

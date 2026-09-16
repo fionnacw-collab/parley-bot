@@ -584,8 +584,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     status_msg = await update.message.reply_text(
-        f"📄 *Menerima dokumen:* `{filename}`\n"
-        f"⏳ Mengunduh dan membaca semua pertandingan via AI Vision...",
+        f"📄 *Menerima:* `{filename}`\n"
+        f"⏳ Mengunduh & mengekstrak data pertandingan...",
         parse_mode="Markdown",
     )
 
@@ -602,28 +602,29 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             legs = await extract_legs_from_image(file_bytes)
             page_info = ""
 
+        if not legs:
+            try:
+                await status_msg.edit_text(
+                    f"❌ Dokumen `{filename}`{page_info} terbaca, namun tidak ada pertandingan/odds yang terdeteksi.\n"
+                    "Pastikan gambar/teks menampilkan nama tim dan odds dengan jelas.",
+                    reply_markup=get_main_menu_keyboard(),
+                    parse_mode="Markdown",
+                )
+            except Exception:
+                pass
+            return
+
         try:
-            await status_msg.delete()
+            await status_msg.edit_text(
+                f"⚡ *Menganalisis {len(legs)} Pertandingan* dari `{filename}`...\n"
+                f"• Menghitung Poisson xG & True Probability...\n"
+                f"• Menghitung Nilai +EV & Staking Kelly Rupiah...",
+                parse_mode="Markdown",
+            )
         except Exception:
             pass
 
-        if not legs:
-            await update.message.reply_text(
-                f"❌ Dokumen `{filename}`{page_info} terbaca, namun tidak ada pertandingan atau pasaran yang terdeteksi.\n"
-                "Pastikan dokumen menampilkan nama tim dan odds dengan jelas.",
-                reply_markup=get_main_menu_keyboard(),
-                parse_mode="Markdown",
-            )
-            return
-
-        await update.message.reply_text(
-            f"✅ *Berhasil mengekstrak {len(legs)} pertandingan* dari PDF `{filename}`{page_info}!\n"
-            f"Memulai analisis mendalam untuk seluruh pertandingan...",
-            parse_mode="Markdown",
-        )
-
-        await execute_analysis_flow(update, legs)
-
+        await execute_analysis_flow(update, legs, existing_status_msg=status_msg)
     except Exception as e:
         logger.exception("Error processing document")
         try:
@@ -637,16 +638,19 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Pipeline Execution & Callback Queries
 # ---------------------------------------------------------------------------
 
-async def execute_analysis_flow(update: Update, legs: list[Leg]):
+async def execute_analysis_flow(
+    update: Update,
+    legs: list[Leg],
+    existing_status_msg=None,
+):
     """Execute deep multi-layer analysis and render the main parlay report."""
     target_msg = update.message if update.message else (update.callback_query.message if update.callback_query else None)
-    status_msg = None
-    if target_msg:
+    status_msg = existing_status_msg
+    if not status_msg and target_msg:
         status_msg = await target_msg.reply_text(
-            f"⏳ *Memproses analisis mendalam untuk {len(legs)} pertandingan...*\n"
-            f"• Menghitung Poisson Expected Goals (xG)...\n"
-            f"• Menghitung Expected Value (+EV) & Kelly Stake...\n"
-            f"• Mensintesis taktik & peluang pasar...",
+            f"⏳ *Memproses analisis {len(legs)} pertandingan...*\n"
+            f"• Menghitung Poisson xG & True Probability...\n"
+            f"• Menghitung Nilai +EV & Rekomendasi Staking...",
             parse_mode="Markdown",
         )
 
@@ -662,7 +666,6 @@ async def execute_analysis_flow(update: Update, legs: list[Leg]):
                 await status_msg.delete()
             except Exception:
                 pass
-
         summary_text, reply_markup = format_parlay_overview(report, user_id=chat_id)
         await safe_reply(update, summary_text, reply_markup=reply_markup)
 
