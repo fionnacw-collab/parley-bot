@@ -34,7 +34,7 @@ from telegram.ext import (
 from config import settings
 from models import Leg, ParlayAnalysisReport
 from parser import parse_legs
-from vision import extract_legs_from_image
+from vision import extract_legs_from_image, extract_legs_from_pdf
 from analyzer_engine import analyze_parlay
 from formatter import format_parlay_overview, format_single_match_deep_dive
 
@@ -95,8 +95,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`Arsenal vs Chelsea - Over 2.5 @1.85`\n"
         "`Real Madrid vs Barcelona - Real Madrid @2.10`\n"
         "`Inter vs Juventus - Under 2.5 @1.75`\n\n"
-        "2️⃣ *Kirim Foto Screenshot:*\n"
-        "Cukup kirim foto slip taruhan (SBOBET, Bet365, Parlay slip, dll).\n\n"
+        "2️⃣ *Kirim Foto / Dokumen PDF (Multi-Laga):*\n"
+        "• Kirim foto slip taruhan (SBOBET, Bet365, Parlay slip, dll).\n"
+        "• Atau kirim **1 file PDF** berisi kumpulan screenshot semua pertandingan! Bot akan membaca seluruh halaman dan menganalisis setiap laga otomatis.\n\n"
         "3️⃣ *Analisis Cepat Satu Laga:*\n"
         "`/analyze Arsenal vs Chelsea`\n\n"
         "Ketik /help untuk panduan lengkap atau /status untuk memeriksa koneksi sistem."
@@ -224,6 +225,76 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Gagal memproses gambar: {e}")
 
 
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle incoming PDF documents or image files containing multiple matches."""
+    doc = update.message.document
+    if not doc:
+        return
+
+    filename = doc.file_name or "document"
+    mime_type = doc.mime_type or ""
+    is_pdf = filename.lower().endswith(".pdf") or mime_type == "application/pdf"
+    is_image = (
+        filename.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
+        or mime_type.startswith("image/")
+    )
+
+    if not is_pdf and not is_image:
+        await update.message.reply_text(
+            "📄 *Format file tidak didukung.*\n"
+            "Silakan kirim file **PDF (.pdf)** berisi kompilasi screenshot pertandingan, "
+            "atau kirim foto langsung.",
+            parse_mode="Markdown",
+        )
+        return
+
+    status_msg = await update.message.reply_text(
+        f"📄 *Menerima dokumen:* `{filename}`\n"
+        f"⏳ Mengunduh dan membaca semua pertandingan via AI Vision...",
+        parse_mode="Markdown",
+    )
+
+    try:
+        tg_file = await context.bot.get_file(doc.file_id)
+        buf = io.BytesIO()
+        await tg_file.download_to_memory(buf)
+        file_bytes = buf.getvalue()
+
+        if is_pdf:
+            legs, total_pages = await extract_legs_from_pdf(file_bytes)
+            page_info = f" ({total_pages} halaman)"
+        else:
+            legs = await extract_legs_from_image(file_bytes)
+            page_info = ""
+
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+
+        if not legs:
+            await update.message.reply_text(
+                f"❌ Dokumen `{filename}`{page_info} terbaca, namun tidak ada pertandingan atau pasaran yang terdeteksi.\n"
+                "Pastikan dokumen menampilkan nama tim dan odds dengan jelas.",
+                parse_mode="Markdown",
+            )
+            return
+
+        await update.message.reply_text(
+            f"✅ *Berhasil mengekstrak {len(legs)} pertandingan* dari PDF `{filename}`{page_info}!\n"
+            f"Memulai analisis mendalam untuk seluruh pertandingan...",
+            parse_mode="Markdown",
+        )
+
+        await execute_analysis_flow(update, legs)
+
+    except Exception as e:
+        logger.exception("Error processing document")
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+        await update.message.reply_text(f"❌ Gagal memproses dokumen `{filename}`: {e}")
 # ---------------------------------------------------------------------------
 # Pipeline Execution & Callback Queries
 # ---------------------------------------------------------------------------
@@ -382,6 +453,7 @@ async def main():
     app.add_handler(CommandHandler("analyze", cmd_analyze))
 
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     app.add_handler(CallbackQueryHandler(handle_callback_query))

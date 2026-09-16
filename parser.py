@@ -52,6 +52,10 @@ def parse_legs(text: str) -> list[Leg]:
         if not line_clean or line_clean.startswith("#"):
             continue
 
+        # Strip leading numbers/bullets (e.g., "1.", "1)", "[1]", "-", "•", "*")
+        line_clean = re.sub(r"^(?:\[?\d+[.)\]]|\*|-|•)\s*", "", line_clean).strip()
+        if not line_clean:
+            continue
         # Try standard pattern
         m1 = _STANDARD_RE.match(line_clean)
         if m1:
