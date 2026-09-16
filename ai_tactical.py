@@ -1,5 +1,5 @@
 """
-ai_tactical.py — Deep qualitative tactical analysis powered by OpenAI GPT-4o.
+ai_tactical.py — Deep qualitative tactical analysis powered by Google Gemini (Free) or OpenAI GPT-4o.
 Analyzes stylistic clashes, tactical matchups, motivation, fatigue, squad depth, and betting traps.
 """
 
@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import logging
-from openai import AsyncOpenAI
 
 from config import settings
 from models import (
@@ -46,6 +45,68 @@ Return ONLY pure JSON. No markdown fences, no conversational text.
 """
 
 
+def _parse_tactical_json(raw: str) -> tuple[TacticalReport, str, str]:
+    """Parse JSON string into TacticalReport and alternative picks."""
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[1]
+        if raw.endswith("```"):
+            raw = raw.rsplit("\n", 1)[0]
+        raw = raw.strip()
+
+    data = json.loads(raw)
+    report = TacticalReport(
+        summary=data.get("summary", ""),
+        tactical_clash=data.get("tactical_clash", ""),
+        squad_injuries_impact=data.get("squad_injuries_impact", ""),
+        fatigue_and_schedule=data.get("fatigue_and_schedule", ""),
+        key_vulnerabilities=data.get("key_vulnerabilities", ""),
+        trap_warning=data.get("trap_warning", ""),
+        scenario_prediction=data.get("scenario_prediction", ""),
+    )
+    safe_alt = data.get("alternative_safe_pick", "")
+    high_ev_alt = data.get("alternative_high_ev_pick", "")
+    return report, safe_alt, high_ev_alt
+
+
+async def _generate_gemini_tactical(user_payload: dict) -> tuple[TacticalReport, str, str]:
+    """Generate tactical analysis with Google Gemini."""
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=settings.gemini_api_key)
+    prompt = f"{_SYSTEM_PROMPT}\n\nMatch Data:\n{json.dumps(user_payload, indent=2)}"
+
+    response = await client.aio.models.generate_content(
+        model=settings.gemini_model,
+        contents=[prompt],
+        config=types.GenerateContentConfig(
+            temperature=0.3,
+            response_mime_type="application/json",
+        ),
+    )
+    raw = response.text or "{}"
+    return _parse_tactical_json(raw)
+
+
+async def _generate_openai_tactical(user_payload: dict) -> tuple[TacticalReport, str, str]:
+    """Generate tactical analysis with OpenAI."""
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI(api_key=settings.openai_api_key)
+    response = await client.chat.completions.create(
+        model=settings.openai_model,
+        messages=[
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": json.dumps(user_payload, indent=2)},
+        ],
+        temperature=0.3,
+        max_tokens=1000,
+    )
+    raw = response.choices[0].message.content or "{}"
+    return _parse_tactical_json(raw)
+
+
 async def generate_tactical_analysis(
     leg: Leg,
     home: TeamStats,
@@ -54,10 +115,10 @@ async def generate_tactical_analysis(
     poisson: PoissonResult,
 ) -> tuple[TacticalReport, str, str]:
     """
-    Generate deep tactical analysis using OpenAI GPT-4o-mini.
+    Generate deep tactical analysis using Google Gemini (Free) or OpenAI.
     Returns (TacticalReport, alternative_safe_pick, alternative_high_ev_pick).
     """
-    if not settings.has_openai:
+    if not settings.has_ai:
         return _fallback_tactical_report(leg, home, away, poisson)
 
     user_payload = {
@@ -97,45 +158,33 @@ async def generate_tactical_analysis(
         },
     }
 
-    try:
-        client = AsyncOpenAI(api_key=settings.openai_api_key)
-        response = await client.chat.completions.create(
-            model=settings.openai_model,
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": json.dumps(user_payload, indent=2)},
-            ],
-            temperature=0.3,
-            max_tokens=1000,
-        )
+    provider = settings.active_ai_provider
 
-        raw = response.choices[0].message.content.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1]
-            if raw.endswith("```"):
-                raw = raw.rsplit("\n", 1)[0]
-            raw = raw.strip()
+    if provider == "gemini":
+        try:
+            return await _generate_gemini_tactical(user_payload)
+        except Exception as e:
+            logger.warning(f"Gemini tactical analysis error: {e}")
+            if settings.has_openai:
+                try:
+                    return await _generate_openai_tactical(user_payload)
+                except Exception:
+                    pass
+            return _fallback_tactical_report(leg, home, away, poisson)
 
-        data = json.loads(raw)
+    elif provider == "openai":
+        try:
+            return await _generate_openai_tactical(user_payload)
+        except Exception as e:
+            logger.warning(f"OpenAI tactical analysis error: {e}")
+            if settings.has_gemini:
+                try:
+                    return await _generate_gemini_tactical(user_payload)
+                except Exception:
+                    pass
+            return _fallback_tactical_report(leg, home, away, poisson)
 
-        report = TacticalReport(
-            summary=data.get("summary", ""),
-            tactical_clash=data.get("tactical_clash", ""),
-            squad_injuries_impact=data.get("squad_injuries_impact", ""),
-            fatigue_and_schedule=data.get("fatigue_and_schedule", ""),
-            key_vulnerabilities=data.get("key_vulnerabilities", ""),
-            trap_warning=data.get("trap_warning", ""),
-            scenario_prediction=data.get("scenario_prediction", ""),
-        )
-
-        safe_alt = data.get("alternative_safe_pick", "")
-        high_ev_alt = data.get("alternative_high_ev_pick", "")
-
-        return report, safe_alt, high_ev_alt
-
-    except Exception as e:
-        logger.warning(f"OpenAI tactical analysis error: {e}")
-        return _fallback_tactical_report(leg, home, away, poisson)
+    return _fallback_tactical_report(leg, home, away, poisson)
 
 
 def _fallback_tactical_report(
@@ -146,52 +195,57 @@ def _fallback_tactical_report(
 ) -> tuple[TacticalReport, str, str]:
     """Provide structured tactical synthesis when LLM is offline."""
     top_score = poisson.top_exact_scores[0][0] if poisson.top_exact_scores else "1-1"
+    home_xg = poisson.lambda_home
+    away_xg = poisson.lambda_away
+
+    # Stylistic clash synthesis based on goals & clean sheets
+    if home_xg > 1.8 and away_xg > 1.3:
+        tactical_clash = (
+            f"{home.name} menerapkan pressing garis tinggi dengan rata-rata xG {home_xg:.2f}, "
+            f"sementara {away.name} agresif dalam counter-attack cepat (xG {away_xg:.2f}). "
+            "Ruang antar-lini diprediksi terbuka lebar."
+        )
+    elif home_xg < 1.2 and away_xg < 1.0:
+        tactical_clash = (
+            f"Kedua tim cenderung pragmatis dengan blok pertahanan rapat. {home.name} mencatatkan "
+            f"{int(home.clean_sheet_pct * 100)}% clean sheet, membatasi peluang bersih lawan."
+        )
+    else:
+        tactical_clash = (
+            f"{home.name} mendominasi penguasaan bola di kandang, menguji kedisiplinan organisasi zonal marking {away.name}."
+        )
 
     summary = (
-        f"{home.name} (Form: {home.form_str}) menjamu {away.name} (Form: {away.form_str}). "
-        f"Model memproyeksikan xG {poisson.lambda_home:.2f} vs {poisson.lambda_away:.2f} "
-        f"dengan skor probabilitas tertinggi {top_score}."
+        f"Pertemuan antara {home.name} ({home.form_str}) melawan {away.name} ({away.form_str}). "
+        f"Model kuantitatif memproyeksikan skor paling mungkin {top_score} dengan dominasi peluang dari sisi {home.name if home_xg >= away_xg else away.name}."
     )
 
-    tactical_clash = (
-        f"{home.name} cenderung mengontrol penguasaan bola di kandang dengan rata-rata {home.goals_scored_avg:.1f} gol/laga. "
-        f"{away.name} mengandalkan struktur transisi cepat namun rentan kebobolan {away.goals_conceded_avg:.1f} gol saat tandang."
-    )
-
-    squad_impact = (
-        "Rotasi di lini tengah dan kebugaran bek sayap menjadi faktor krusial dalam meredam transisi balik lawan."
-    )
-
-    fatigue = (
-        "Pertandingan krusial di jadwal kompetisi menuntut intensitas tinggi; tim dengan kedalaman bangku cadangan lebih unggul."
-    )
-
-    vulnerabilities = (
-        f"Sisi kiri pertahanan {away.name} kerap tereksploitasi ketika menghadapi pressing tinggi terorganisir."
-    )
-
+    squad_impact = "Stabilitas starting XI dipertahankan dengan rotasi minor pada sektor sayap."
+    fatigue = "Jadwal pertandingan normal tanpa indikasi kelelahan ekstrem dari kompetisi piala."
+    vulnerabilities = f"Kelemahan defensif {away.name if home_xg > away_xg else home.name} saat transisi negatif bola mati."
     trap_warning = (
-        f"Waspadai pergerakan odds pasar pada {leg.pick}. Jangan terpaku pada nama besar tanpa menghitung margin bandar."
+        "Waspadai pergerakan odds bandar yang sengaja memicu bias publik terhadap tim favorit nama besar."
     )
+    scenario = f"Tempo berhati-hati di babak pertama, dengan intensitas meningkat drastis setelah menit 60'."
 
-    scenario = (
-        f"Babak pertama diprediksi berlangsung taktis dan berhati-hati. Peluang gol meningkat signifikan di babak kedua "
-        f"saat stamina lini bertahan mulai menurun."
+    # Contextual alternative picks
+    if poisson.prob_over_25 > 0.55:
+        safe_alt = "Over 1.5 Goals"
+        high_ev_alt = "Over 2.5 & Both Teams to Score"
+    elif poisson.prob_home_win > 0.60:
+        safe_alt = f"{home.name} or Draw (1X)"
+        high_ev_alt = f"{home.name} Win & Over 1.5"
+    else:
+        safe_alt = "Under 3.5 Goals"
+        high_ev_alt = "Draw / Under 2.5"
+
+    report = TacticalReport(
+        summary=summary,
+        tactical_clash=tactical_clash,
+        squad_injuries_impact=squad_impact,
+        fatigue_and_schedule=fatigue,
+        key_vulnerabilities=vulnerabilities,
+        trap_warning=trap_warning,
+        scenario_prediction=scenario,
     )
-
-    safe_pick = "Under 3.5" if poisson.prob_over_25 < 0.55 else "Over 1.5"
-    high_ev = f"{home.name} Win & Over 1.5" if poisson.prob_home_win > 0.50 else "BTTS Yes"
-
-    return (
-        TacticalReport(
-            summary=summary,
-            tactical_clash=tactical_clash,
-            squad_injuries_impact=squad_impact,
-            fatigue_and_schedule=fatigue,
-            key_vulnerabilities=vulnerabilities,
-            trap_warning=trap_warning,
-            scenario_prediction=scenario,
-        ),
-        safe_pick,
-        high_ev,
-    )
+    return report, safe_alt, high_ev_alt

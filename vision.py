@@ -1,5 +1,5 @@
 """
-vision.py — State-of-the-art bet slip & document recognition using OpenAI Vision (GPT-4o-mini).
+vision.py — Bet slip & document recognition using Google Gemini (Free) or OpenAI Vision.
 Extracts all matches, markets, selections, and odds from images, photo albums, and multi-page PDF documents.
 """
 
@@ -8,7 +8,6 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from openai import AsyncOpenAI, RateLimitError
 import pymupdf
 
 from config import settings
@@ -40,7 +39,7 @@ Example output:
 
 
 def _parse_legs_json(raw: str) -> list[Leg]:
-    """Parse GPT response JSON into structured Leg domain models."""
+    """Parse JSON output into structured Leg domain models."""
     raw = raw.strip()
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[1]
@@ -91,19 +90,35 @@ def _parse_legs_json(raw: str) -> list[Leg]:
     return legs
 
 
-async def extract_legs_from_images(images: list[bytes]) -> list[Leg]:
-    """
-    Send one or multiple images/pages to OpenAI Vision and return structured Leg objects.
-    """
-    if not images:
-        return []
+async def _extract_legs_gemini(images: list[bytes]) -> list[Leg]:
+    """Extract legs using Google Gemini Vision."""
+    from google import genai
+    from google.genai import types
 
-    if not settings.has_openai:
-        raise ValueError("OPENAI_API_KEY belum dikonfigurasi di file .env")
+    client = genai.Client(api_key=settings.gemini_api_key)
+    contents: list = [_VISION_PROMPT]
+
+    for img_bytes in images:
+        contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/png"))
+
+    response = await client.aio.models.generate_content(
+        model=settings.gemini_model,
+        contents=contents,
+        config=types.GenerateContentConfig(
+            temperature=0.1,
+            response_mime_type="application/json",
+        ),
+    )
+
+    raw = response.text or "[]"
+    return _parse_legs_json(raw)
+
+
+async def _extract_legs_openai(images: list[bytes]) -> list[Leg]:
+    """Extract legs using OpenAI Vision."""
+    from openai import AsyncOpenAI, RateLimitError
 
     client = AsyncOpenAI(api_key=settings.openai_api_key)
-
-    # Prepare message content with all images
     user_content: list[dict] = [{"type": "text", "text": _VISION_PROMPT}]
 
     for img_bytes in images:
@@ -125,18 +140,41 @@ async def extract_legs_from_images(images: list[bytes]) -> list[Leg]:
             max_tokens=2500,
             temperature=0.1,
         )
-
         raw = response.choices[0].message.content or "[]"
         return _parse_legs_json(raw)
-
     except RateLimitError:
-        logger.warning("OpenAI quota exhausted (RateLimitError)")
         raise ValueError(
-            "Saldo kredit OpenAI kamu habis ($0). Silakan top-up saldo API di https://platform.openai.com/settings/organization/billing atau kirim daftar pertandingan dalam format teks."
+            "Saldo OpenAI ($0) habis. Kamu bisa beralih ke Google Gemini (100% Gratis) dengan mengisi GEMINI_API_KEY di .env!"
         )
-    except Exception as e:
-        logger.exception("Failed to analyze images with OpenAI Vision")
-        raise e
+
+
+async def extract_legs_from_images(images: list[bytes]) -> list[Leg]:
+    """
+    Send images to the active AI Vision provider (Gemini or OpenAI).
+    """
+    if not images:
+        return []
+
+    provider = settings.active_ai_provider
+
+    if provider == "gemini":
+        try:
+            return await _extract_legs_gemini(images)
+        except Exception as e:
+            logger.exception("Gemini Vision extraction error")
+            raise ValueError(f"Gagal memproses gambar via Gemini: {e}")
+
+    elif provider == "openai":
+        try:
+            return await _extract_legs_openai(images)
+        except Exception as e:
+            logger.exception("OpenAI Vision extraction error")
+            raise e
+
+    else:
+        raise ValueError(
+            "Belum ada API Key AI yang aktif. Kamu bisa menggunakan Google Gemini (100% Gratis) dengan memasukkan GEMINI_API_KEY di file .env."
+        )
 
 
 async def extract_legs_from_image(image_bytes: bytes) -> list[Leg]:
@@ -147,7 +185,7 @@ async def extract_legs_from_image(image_bytes: bytes) -> list[Leg]:
 async def extract_legs_from_pdf(pdf_bytes: bytes, max_pages: int = 20) -> tuple[list[Leg], int]:
     """
     Parse a multi-page PDF document, extracting matches via text parsing and/or
-    rendering pages to high-res images for OpenAI Vision analysis.
+    rendering pages to high-res images for AI Vision analysis.
     Returns (legs, total_pages).
     """
     try:
@@ -170,20 +208,19 @@ async def extract_legs_from_pdf(pdf_bytes: bytes, max_pages: int = 20) -> tuple[
         if text:
             all_text += text + "\n"
 
-        # Render at 150 DPI for sharp image recognition
         pix = page.get_pixmap(dpi=150)
         rendered_images.append(pix.tobytes("png"))
 
     doc.close()
 
-    # 1. First attempt: Text-based heuristic parsing if PDF has text content
+    # 1. Text parsing attempt if PDF contains selectable text
     text_legs = parse_legs(all_text) if all_text.strip() else []
 
-    # 2. Vision attempt: Send rendered images to OpenAI Vision
+    # 2. Vision attempt if AI provider is active
     vision_legs: list[Leg] = []
     vision_error = None
 
-    if rendered_images:
+    if rendered_images and settings.has_ai:
         batch_size = 5
         for i in range(0, len(rendered_images), batch_size):
             batch = rendered_images[i : i + batch_size]
@@ -198,7 +235,6 @@ async def extract_legs_from_pdf(pdf_bytes: bytes, max_pages: int = 20) -> tuple[
     combined_legs: list[Leg] = []
     seen = set()
 
-    # Prefer vision legs if available, else text legs
     source_legs = vision_legs if vision_legs else text_legs
     for leg in source_legs:
         key = (leg.home.lower(), leg.away.lower(), leg.pick.lower())
@@ -206,7 +242,6 @@ async def extract_legs_from_pdf(pdf_bytes: bytes, max_pages: int = 20) -> tuple[
             seen.add(key)
             combined_legs.append(leg)
 
-    # If nothing was extracted and vision had an error, raise the specific error
     if not combined_legs and vision_error:
         raise vision_error
 

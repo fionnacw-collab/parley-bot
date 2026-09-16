@@ -127,14 +127,19 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /status command showing system diagnostics."""
-    ai_status = "🟢 Terhubung" if settings.has_openai else "🟡 Mode Heuristik (Tanpa API Key)"
+    if settings.active_ai_provider == "gemini":
+        ai_status = f"🟢 Google Gemini ({settings.gemini_model}) - 100% Gratis"
+    elif settings.active_ai_provider == "openai":
+        ai_status = f"🟢 OpenAI ({settings.openai_model})"
+    else:
+        ai_status = "🟡 Mode Heuristik & Statistik Matematika"
+
     rapid_status = "🟢 Terhubung" if settings.has_rapidapi else "🟡 Mode Fallback"
     odds_status = "🟢 Terhubung" if settings.has_odds_api else "🟡 Mode Estimasi Sintetis"
 
     text = (
         "⚡ *STATUS SISTEM BOT 24/7* ⚡\n\n"
-        f"• 🤖 *AI Engine (OpenAI):* {ai_status}\n"
+        f"• 🤖 *AI Engine:* {ai_status}\n"
         f"• ⚽ *Football Data (RapidAPI):* {rapid_status}\n"
         f"• 🏦 *Market Odds (The Odds API):* {odds_status}\n"
         f"• 🌐 *Cloud Health Server:* Port `{settings.port}` (Aktif)\n"
