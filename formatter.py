@@ -1,12 +1,22 @@
 """
-formatter.py — Rich Telegram Markdown formatter and interactive Inline Keyboard builder.
-Formats deep mathematical models, Poisson xG, market consensus, and AI tactical insights.
+formatter.py — Rich Telegram Markdown Formatter & Interactive Inline Keyboard Builder.
+Provides professional visual layouts, progress bars, Rupiah staking calculations,
+and interactive navigation for Top Picks, Optimizer, Bet Tracker, Schedule, and Markets.
 """
 
 from __future__ import annotations
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from models import DeepMatchAnalysis, ParlayAnalysisReport
+from models import (
+    DeepMatchAnalysis,
+    OptimizedParlayPackage,
+    ParlayAnalysisReport,
+    TopPickCategory,
+    TopPickItem,
+    TrackedBet,
+    UserStats,
+)
+import tracker
 
 
 def _progress_bar(percentage: float, length: int = 10) -> str:
@@ -17,163 +27,427 @@ def _progress_bar(percentage: float, length: int = 10) -> str:
     return f"[{'█' * filled}{'░' * empty}]"
 
 
-def format_parlay_overview(report: ParlayAnalysisReport) -> tuple[str, InlineKeyboardMarkup]:
-    """
-    Format the primary executive summary and parlay dashboard with interactive match buttons.
-    """
-    lines: list[str] = []
-    lines.append("🏆 *DEEP FOOTBALL & PARLAY ANALYZER* 🏆")
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append(f"📊 *Ringkasan Tiket:* {len(report.matches)} Pertandingan")
-    lines.append(f"💰 *Combined Odds:* `@{report.combined_user_odds:.2f}`")
-    lines.append(
-        f"🎯 *True Win Probability:* `{report.true_combined_prob * 100:.1f}%` "
-        f"_(Bandar Implied: {report.bookie_combined_prob * 100:.1f}%)_"
-    )
+def _format_rupiah(amount: float) -> str:
+    """Format float into standard Indonesian Rupiah format (Rp X.XXX.XXX)."""
+    val = int(round(amount))
+    return f"Rp {val:,}".replace(",", ".")
 
-    ev_sign = "+" if report.parlay_expected_value > 0 else ""
-    ev_color = "🟢" if report.parlay_expected_value > 0.05 else ("🟡" if report.parlay_expected_value >= 0 else "🔴")
-    lines.append(f"{ev_color} *Parlay EV:* `{ev_sign}{report.parlay_expected_value * 100:.1f}%`")
-    lines.append(
-        f"🛡️ *Rekomendasi Staking:* `{report.recommended_units:.2f} Unit` "
-        f"_(Confidence: {report.overall_confidence}%)_"
-    )
-    lines.append("")
-    lines.append(f"📝 *Analisis Eksekutif:*\n_{report.executive_summary}_")
 
-    if report.correlation_warnings:
+# ---------------------------------------------------------------------------
+# 1. Main Parlay Overview with Staking & Optimizer Buttons
+# ---------------------------------------------------------------------------
+
+def format_parlay_overview(
+    report: ParlayAnalysisReport,
+    user_id: int | None = None,
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Format executive summary, mathematical outputs, and interactive actions."""
+    bankroll = tracker.get_user_bankroll(user_id) if user_id else 1000000.0
+    rec_stake_pct = report.recommended_kelly_stake
+    rec_stake_rp = bankroll * rec_stake_pct
+    pot_return_rp = rec_stake_rp * report.combined_odds
+    net_profit_rp = pot_return_rp - rec_stake_rp
+
+    ev_sign = "+" if report.overall_expected_value > 0 else ""
+    ev_color = "🟢" if report.overall_expected_value > 0.05 else ("🟡" if report.overall_expected_value >= 0 else "🔴")
+
+    lines: list[str] = [
+        "🏆 *LAPORAN ANALISIS PARLAY PROFESIONAL* 🏆",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"📊 *Jumlah Laga:* `{len(report.matches)} Pertandingan`",
+        f"💰 *Total Odds Tiket:* `@{report.combined_odds:.2f}`",
+        f"🎯 *True Win Probability:* `{report.combined_true_probability * 100:.1f}%`",
+        f"{_progress_bar(report.combined_true_probability * 100, 10)}",
+        f"⚖️ *Fair Odds (Bebas Komisi):* `@{report.combined_fair_odds:.2f}`",
+        f"{ev_color} *Overall +EV (Nilai Keuntungan):* `{ev_sign}{report.overall_expected_value * 100:.1f}%`",
+        f"🛡️ *Tingkat Resiko:* `{report.risk_tier}`",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "💵 *REKOMENDASI STAKING & MODAL RUPIAH:*",
+        f"• 💼 *Total Bankroll Kamu:* `{_format_rupiah(bankroll)}`",
+        f"• 💰 *Saran Pasang (Kelly):* `{_format_rupiah(rec_stake_rp)}` _({rec_stake_pct*100:.1f}% modal)_",
+        f"• 🎯 *Estimasi Profit Bersih:* `+{_format_rupiah(net_profit_rp)}`",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+
+    if report.core_anchor_leg:
+        lines.append(f"⭐ *Core Anchor (Laga Paling Solid):* `{report.core_anchor_leg.clean_title()}`")
         lines.append("")
-        for w in report.correlation_warnings:
-            lines.append(w)
 
+    lines.append(f"📝 *Executive Summary:*\n_{report.executive_summary}_")
     lines.append("")
-    lines.append("📋 *DAFTAR & PERFORMA SETIAP LAGA:*")
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("📋 *PERFORMA SETIAP PERTANDINGAN:*")
 
     keyboard_buttons: list[list[InlineKeyboardButton]] = []
 
     for i, m in enumerate(report.matches, start=1):
         leg = m.leg
-        ev_str = f"{'+' if m.expected_value > 0 else ''}{m.expected_value * 100:.1f}% EV"
-        bar = _progress_bar(m.true_probability * 100, length=8)
+        ev_item_sign = "+" if m.expected_value > 0 else ""
+        badge = "🟢" if m.expected_value > 0.05 else ("🟡" if m.expected_value >= 0 else "🔴")
+        if m.is_trap_candidate:
+            badge = "⚠️ TRAP"
 
-        lines.append(f"*{i}. {leg.home} vs {leg.away}*")
-        lines.append(f"   🎯 Pick: `{leg.pick}` @`{leg.odds:.2f}` | {m.verdict}")
-        lines.append(f"   📈 True Prob: `{m.true_probability * 100:.1f}%` {bar} | `{ev_str}`")
-        lines.append(f"   🏷️ Peran: *{m.parlay_role}* | Resiko: `{m.risk_level}`")
-        lines.append("")
-
-        # Add button for this match
-        btn_text = f"🔍 #{i} {leg.home[:10]} vs {leg.away[:10]}"
+        lines.append(
+            f"{i}. *{leg.home} vs {leg.away}*\n"
+            f"   • Pilihan: `{leg.pick}` @`{leg.odds:.2f}`\n"
+            f"   • True Prob: `{m.true_probability * 100:.1f}%` | EV: `{badge} {ev_item_sign}{m.expected_value * 100:.1f}%`"
+        )
+        btn_text = f"{badge} Laga #{i}: {leg.home} vs {leg.away}"
         keyboard_buttons.append([InlineKeyboardButton(btn_text, callback_data=f"match_{i-1}")])
 
-    lines.append("👇 *Pilih tombol di bawah untuk melihat analisis mendalam per laga:*")
+    lines.append("")
+    lines.append("👇 *Pilih menu tindakan di bawah:*")
 
-    reply_markup = InlineKeyboardMarkup(keyboard_buttons)
-    return "\n".join(lines), reply_markup
+    # Action Buttons
+    action_row = [
+        InlineKeyboardButton("🛡️ Optimasi & Filter Trap", callback_data="opt_parlay"),
+        InlineKeyboardButton("💾 Simpan ke Tracker", callback_data="track_save_parlay"),
+    ]
+    util_row = [
+        InlineKeyboardButton("💵 Atur Modal (Bankroll)", callback_data="menu_bankroll"),
+        InlineKeyboardButton("🔙 Menu Utama", callback_data="menu_main"),
+    ]
+    keyboard_buttons.append(action_row)
+    keyboard_buttons.append(util_row)
 
+    return "\n".join(lines), InlineKeyboardMarkup(keyboard_buttons)
+
+
+# ---------------------------------------------------------------------------
+# 2. Single Match Deep Dive Formatter
+# ---------------------------------------------------------------------------
 
 def format_single_match_deep_dive(
-    analysis: DeepMatchAnalysis,
+    m: DeepMatchAnalysis,
     index: int,
     total: int,
+    user_id: int | None = None,
 ) -> tuple[str, InlineKeyboardMarkup]:
-    """
-    Format ultra-detailed mathematical, tactical, and market analysis for a single match.
-    """
-    m = analysis
+    """Format in-depth Poisson, market odds, and tactical breakdown for single match."""
+    bankroll = tracker.get_user_bankroll(user_id) if user_id else 1000000.0
     leg = m.leg
     p = m.poisson
     t = m.tactical
+    single_stake_rp = bankroll * m.kelly_fractional_stake
+    single_profit_rp = (single_stake_rp * leg.odds) - single_stake_rp
 
-    lines: list[str] = []
-    lines.append(f"⚽ *ANALISIS MENDALAM LAGA #{index + 1} / {total}*")
-    lines.append(f"⚔️ *{leg.home}* vs *{leg.away}*")
-    lines.append(f"🎯 *Pilihan Taruhan:* `{leg.pick}` @`{leg.odds:.2f}` ({leg.market.value})")
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-
-    # 1. Math & Value
-    lines.append("📈 *1. METRIK MATEMATIKA & VALUE:*")
-    lines.append(f"• Status: *{m.verdict}*")
     ev_sign = "+" if m.expected_value > 0 else ""
-    lines.append(f"• Expected Value (EV): *{ev_sign}{m.expected_value * 100:.1f}%*")
-    lines.append(f"• Probabilitas Riil Model: *{m.true_probability * 100:.1f}%*")
-    lines.append(f"• Implied Odds Bandar: *{m.bookie_implied_prob * 100:.1f}%*")
-    lines.append(f"• Keunggulan vs Bandar (Edge): *{'+' if m.edge_pct > 0 else ''}{m.edge_pct * 100:.1f}%*")
-    lines.append(f"• Kelly Staking: *{m.kelly_stake_pct * 100:.2f}% Bankroll*")
-    lines.append(f"• Confidence Score: *{m.confidence_score}%* {_progress_bar(m.confidence_score, 8)}")
-    lines.append("")
+    ev_badge = "🟢 SANGAT BAGUS (+EV)" if m.expected_value > 0.05 else ("🟡 NETRAL" if m.expected_value >= 0 else "🔴 OVERVALUED (-EV)")
 
-    # 2. Poisson & Expected Goals (xG)
-    lines.append("📐 *2. MODEL POISSON & EXPECTED GOALS (xG):*")
-    lines.append(f"• Proyeksi xG: *{leg.home} {p.lambda_home:.2f}* - *{p.lambda_away:.2f} {leg.away}*")
-    lines.append(
-        f"• Probabilitas 1X2: Home *{p.prob_home_win * 100:.1f}%* | "
-        f"Draw *{p.prob_draw * 100:.1f}%* | Away *{p.prob_away_win * 100:.1f}%*"
-    )
-    lines.append(
-        f"• Pasar Gol: Over 2.5 *{p.prob_over_25 * 100:.1f}%* | Under 2.5 *{p.prob_under_25 * 100:.1f}%*"
-    )
-    lines.append(
-        f"• BTTS: Yes *{p.prob_btts_yes * 100:.1f}%* | No *{p.prob_btts_no * 100:.1f}%*"
-    )
+    lines = [
+        f"🔍 *DETAIL ANALISIS LAGA #{index + 1}/{total}* 🔍",
+        f"⚽ *{leg.home} vs {leg.away}*",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"📌 *Pilihan Taruhan:* `{leg.pick}` @`{leg.odds:.2f}`",
+        f"🎯 *True Probability:* `{m.true_probability * 100:.1f}%` {_progress_bar(m.true_probability * 100, 8)}",
+        f"⚖️ *Fair Odds Bandar:* `@{m.fair_odds:.2f}`",
+        f"📊 *Status Value (+EV):* `{ev_badge} ({ev_sign}{m.expected_value * 100:.1f}%)`",
+        f"💰 *Saran Pasang Single:* `{_format_rupiah(single_stake_rp)}` _(Estimasi Cuan: +{_format_rupiah(single_profit_rp)})_",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "📐 *MODEL STATISTIK POISSON & xG:*",
+        f"• Proyeksi xG: `{leg.home} ({p.lambda_home:.2f})` vs `({p.lambda_away:.2f}) {leg.away}`",
+        f"• Probabilitas 1X2: `{int(p.prob_home_win*100)}% Menang` | `{int(p.prob_draw*100)}% Seri` | `{int(p.prob_away_win*100)}% Kalah`",
+        f"• Peluang Over 2.5: `{int(p.prob_over_25*100)}%` | Under 2.5: `{int(p.prob_under_25*100)}%`",
+        f"• Peluang BTTS (Gol Kedua Tim): `{int(p.prob_btts_yes*100)}%`",
+    ]
+
     if p.top_exact_scores:
-        scores_str = ", ".join([f"`{s[0]}` ({s[1]}%)" for s in p.top_exact_scores[:4]])
-        lines.append(f"• Skor Paling Realistis: {scores_str}")
+        scores_str = ", ".join(f"`{s[0]}` ({int(s[1]*100)}%)" for s in p.top_exact_scores[:3])
+        lines.append(f"• Skor Paling Mungkin: {scores_str}")
+
+    lines.extend([
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "🧠 *AI TACTICAL & BETTING INSIGHT:*",
+        f"• 📋 *Ringkasan:* {t.summary}",
+        f"• ⚔️ *Benturan Taktik:* {t.tactical_clash}",
+        f"• ⚠️ *Titik Lemah:* {t.key_vulnerabilities}",
+        f"• 🚨 *Trap Warning:* {t.trap_warning}",
+        f"• 🔮 *Skenario Laga:* {t.scenario_prediction}",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+    ])
+
+    if m.alternative_safe_pick or m.alternative_high_ev_pick:
+        lines.append("💡 *ALTERNATIF PASARAN LAIN:*")
+        if m.alternative_safe_pick:
+            lines.append(f"• 🛡️ *Opsi Lebih Aman (Floor Tinggi):* `{m.alternative_safe_pick}`")
+        if m.alternative_high_ev_pick:
+            lines.append(f"• 💎 *Opsi Cuan Maksimal (+EV Tinggi):* `{m.alternative_high_ev_pick}`")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+    keyboard = [
+        [InlineKeyboardButton("💾 Simpan Laga Single ke Tracker", callback_data=f"track_save_single_{index}")],
+        [InlineKeyboardButton("🔙 Kembali ke Ringkasan Tiket", callback_data="back_summary")],
+    ]
+    return "\n".join(lines), InlineKeyboardMarkup(keyboard)
+
+
+# ---------------------------------------------------------------------------
+# 3. Top Picks of the Day Formatter
+# ---------------------------------------------------------------------------
+
+def format_top_picks_view(picks: list[TopPickItem]) -> tuple[str, InlineKeyboardMarkup]:
+    """Format daily AI top picks with 1-click drill-down buttons."""
+    lines: list[str] = [
+        "🔥 *AI TOP PICKS OF THE DAY (PILIHAN TERBAIK)* 🔥",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "Berikut rekomendasi pertandingan dengan nilai matematis (+EV), "
+        "probabilitas kemenangan tinggi, dan keunggulan taktis tajam hari ini:\n",
+    ]
+
+    keyboard_buttons: list[list[InlineKeyboardButton]] = []
+
+    for idx, p in enumerate(picks, start=1):
+        badge = "🛡️" if "Safe" in p.category.value else ("💎" if "+EV" in p.category.value else ("⚽" if "Goals" in p.category.value else "🚩"))
+        lines.extend([
+            f"{badge} *#{idx}. {p.match_title}* — _{p.league}_",
+            f"   • ⏰ Kickoff: `{p.kickoff}`",
+            f"   • 🎯 Pilihan: *{p.pick}* @`{p.odds:.2f}`",
+            f"   • 📊 Win Prob: `{p.win_probability * 100:.1f}%` {_progress_bar(p.win_probability * 100, 6)}",
+            f"   • 💎 Nilai +EV: `+{p.expected_value * 100:.1f}%` | Keyakinan: `{p.confidence_pct}%`",
+            f"   • 💡 Alasan: _{p.tactical_rationale}_",
+            f"   • 📈 Fakta Kunci: _{p.key_stat}_\n",
+        ])
+
+        btn_text = f"🔍 Analisis #{idx}: {p.match_title} ({p.pick})"
+        keyboard_buttons.append([InlineKeyboardButton(btn_text, callback_data=f"top_analyze_{p.id}")])
+
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("💡 *Pilih tombol di bawah untuk analisis instan atau pasang kombo:*")
+
+    keyboard_buttons.append([
+        InlineKeyboardButton("⚡ Gabungkan Semua Top Picks Jadi 1 Parlay", callback_data="top_parlay_all"),
+    ])
+    keyboard_buttons.append([
+        InlineKeyboardButton("🔙 Menu Utama", callback_data="menu_main"),
+    ])
+
+    return "\n".join(lines), InlineKeyboardMarkup(keyboard_buttons)
+
+
+# ---------------------------------------------------------------------------
+# 4. Parlay Optimizer Formatter
+# ---------------------------------------------------------------------------
+
+def format_optimized_parlay_view(
+    opt: OptimizedParlayPackage,
+    user_id: int | None = None,
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Format parlay optimizer dividing slip into Safe Package, Value Package, and Traps."""
+    bankroll = tracker.get_user_bankroll(user_id) if user_id else 1000000.0
+
+    lines: list[str] = [
+        "🛡️ *PARLAY SLIP OPTIMIZER & TRAP ELIMINATOR* 🛡️",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "AI telah membedah seluruh laga tiket kamu dan menyusun paket rekomendasi optimal:\n",
+    ]
+
+    # 1. Conservative Safe Package
+    safe_stake = bankroll * opt.safe_kelly_stake
+    safe_profit = (safe_stake * opt.safe_odds) - safe_stake
+    lines.extend([
+        "🟢 *1. PAKET KONSERVATIF (LOW RISK ANCHOR)*",
+        f"• Jumlah Laga: `{len(opt.safe_legs)} Laga Terpilih Paling Stabil`",
+        f"• Total Odds: `@{opt.safe_odds:.2f}`",
+        f"• Peluang Tembus: `{opt.safe_win_prob * 100:.1f}%` {_progress_bar(opt.safe_win_prob * 100, 6)}",
+        f"• Saran Pasang: `{_format_rupiah(safe_stake)}` _(Estimasi Profit: +{_format_rupiah(safe_profit)})_",
+        "• *Daftar Laga:*",
+    ])
+    for s in opt.safe_legs:
+        lines.append(f"   ✓ `{s.leg.clean_title()}` — *{s.leg.pick}* @`{s.leg.odds:.2f}` (Win Prob: {s.true_probability*100:.0f}%)")
     lines.append("")
 
-    # 3. Market & Sharp Odds
-    if m.odds_data:
-        od = m.odds_data
-        lines.append("🏦 *3. KONSENSUS PASAR & SHARP ODDS:*")
-        lines.append(f"• Rata-rata Pasar: `@{od.avg_odds:.2f}` | Best Odds: `@{od.best_odds:.2f}`")
-        if od.pinnacle_odds > 0:
-            lines.append(f"• Pinnacle (Sharp Benchmark): `@{od.pinnacle_odds:.2f}`")
-        lines.append(f"• Fair Odds (Nol Margin): `@{od.fair_odds:.2f}`")
+    # 2. Maximum Value Sharp Package
+    val_stake = bankroll * opt.value_kelly_stake
+    val_profit = (val_stake * opt.value_odds) - val_stake
+    lines.extend([
+        "💎 *2. PAKET CUAN MAKSIMAL (HIGH +EV VALUE)*",
+        f"• Jumlah Laga: `{len(opt.value_legs)} Laga Bernilai Tinggi`",
+        f"• Total Odds: `@{opt.value_odds:.2f}`",
+        f"• Overall +EV: `+{opt.value_expected_value * 100:.1f}%` (Harga Bandar Terlalu Murah)",
+        f"• Saran Pasang: `{_format_rupiah(val_stake)}` _(Estimasi Profit: +{_format_rupiah(val_profit)})_",
+        "• *Daftar Laga:*",
+    ])
+    for v in opt.value_legs:
+        lines.append(f"   ✓ `{v.leg.clean_title()}` — *{v.leg.pick}* @`{v.leg.odds:.2f}` (+EV: {v.expected_value*100:+.1f}%)")
+    lines.append("")
+
+    # 3. Traps / Filtered Out
+    if opt.trapped_legs:
+        lines.extend([
+            "⚠️ *3. LAGU TERINDIKASI JEBAKAN BANDAR (DISARANKAN DIBUANG)*",
+        ])
+        for t_leg, reasons in opt.trapped_legs:
+            r_str = ", ".join(reasons)
+            lines.append(f"   ❌ `{t_leg.leg.clean_title()}` — *{t_leg.leg.pick}* @`{t_leg.leg.odds:.2f}`")
+            lines.append(f"      _Alasan Bahaya: {r_str}_")
         lines.append("")
 
-    # 4. Form & H2H
-    lines.append("📊 *4. KONDISI TREN & HEAD-TO-HEAD:*")
-    lines.append(f"• {m.home_stats.name} Form: `{m.home_stats.form_str}` (Gol: {m.home_stats.goals_scored_avg:.1f} / laga)")
-    lines.append(f"• {m.away_stats.name} Form: `{m.away_stats.form_str}` (Kebobolan: {m.away_stats.goals_conceded_avg:.1f} / laga)")
-    if m.h2h.total_matches > 0:
-        lines.append(
-            f"• H2H Terakhir ({m.h2h.total_matches} laga): "
-            f"H:{m.h2h.home_wins} D:{m.h2h.draws} A:{m.h2h.away_wins} | "
-            f"Over 2.5: {int(m.h2h.over_25_pct * 100)}% | BTTS: {int(m.h2h.btts_pct * 100)}%"
-        )
-    lines.append("")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("👇 *Pilih paket yang ingin kamu eksekusi:*")
 
-    # 5. Tactical Analysis (AI)
-    lines.append("🧠 *5. LAPORAN TAKTIK & MATCHUP:*")
-    if t.tactical_clash:
-        lines.append(f"• *Benturan Gaya:* {t.tactical_clash}")
-    if t.key_vulnerabilities:
-        lines.append(f"• *Celah Pertahanan:* {t.key_vulnerabilities}")
-    if t.trap_warning:
-        lines.append(f"• *⚠️ Jebakan Bandar:* {t.trap_warning}")
-    if t.scenario_prediction:
-        lines.append(f"• *Alur Pertandingan:* {t.scenario_prediction}")
-    lines.append("")
+    keyboard = [
+        [InlineKeyboardButton("🟢 Analisis Paket Aman (2-3 Laga)", callback_data="opt_run_safe")],
+        [InlineKeyboardButton("💎 Analisis Paket +EV Cuan Maksimal", callback_data="opt_run_value")],
+        [InlineKeyboardButton("🔙 Kembali ke Tiket Asli", callback_data="back_summary")],
+    ]
+    return "\n".join(lines), InlineKeyboardMarkup(keyboard)
 
-    # 6. Alternative Recommendations
-    lines.append("🎯 *6. REKOMENDASI OPSI LAIN:*")
-    if m.alternative_safe_pick:
-        lines.append(f"• 🛡️ *Opsi Lebih Aman:* `{m.alternative_safe_pick}`")
-    if m.alternative_high_ev_pick:
-        lines.append(f"• 🚀 *Opsi High Value:* `{m.alternative_high_ev_pick}`")
 
-    # Navigation buttons
-    nav_row: list[InlineKeyboardButton] = []
-    if index > 0:
-        nav_row.append(InlineKeyboardButton("⬅️ Sebelumnya", callback_data=f"match_{index - 1}"))
-    if index < total - 1:
-        nav_row.append(InlineKeyboardButton("Berikutnya ➡️", callback_data=f"match_{index + 1}"))
+# ---------------------------------------------------------------------------
+# 5. Bankroll Calculator Formatter
+# ---------------------------------------------------------------------------
 
-    buttons = []
-    if nav_row:
-        buttons.append(nav_row)
-    buttons.append([InlineKeyboardButton("📋 Kembali ke Ringkasan Parlay", callback_data="back_summary")])
+def format_bankroll_calculator_view(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    """Format bankroll setup and interactive staking tiers."""
+    current_bankroll = tracker.get_user_bankroll(user_id)
+    conservative_unit = current_bankroll * 0.02
+    balanced_unit = current_bankroll * 0.04
+    aggressive_unit = current_bankroll * 0.07
 
-    reply_markup = InlineKeyboardMarkup(buttons)
-    return "\n".join(lines), reply_markup
+    lines = [
+        "💵 *KALKULATOR BANKROLL & MANAJEMEN MODAL* 💵",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"💼 *Modal Aktif Kamu:* `{_format_rupiah(current_bankroll)}`\n",
+        "📐 *Panduan Alokasi Unit Pasang (Kelly Standard):*",
+        f"• 🟢 *Konservatif (1-2%):* `{_format_rupiah(conservative_unit)}` _(Sangat aman, minim resiko)_",
+        f"• 🟡 *Moderat (3-4%):* `{_format_rupiah(balanced_unit)}` _(Rekomendasi default)_",
+        f"• 🔴 *Agresif (5-7%):* `{_format_rupiah(aggressive_unit)}` _(Khusus laga +EV sangat tinggi)_\n",
+        "💡 *Pilih nominal cepat di bawah atau ketik manual*:",
+        "Contoh: `/bankroll 2500000`",
+    ]
+
+    keyboard = [
+        [
+            InlineKeyboardButton("Rp 250.000", callback_data="set_bankroll_250000"),
+            InlineKeyboardButton("Rp 500.000", callback_data="set_bankroll_500000"),
+        ],
+        [
+            InlineKeyboardButton("Rp 1.000.000", callback_data="set_bankroll_1000000"),
+            InlineKeyboardButton("Rp 2.500.000", callback_data="set_bankroll_2500000"),
+        ],
+        [
+            InlineKeyboardButton("Rp 5.000.000", callback_data="set_bankroll_5000000"),
+            InlineKeyboardButton("Rp 10.000.000", callback_data="set_bankroll_10000000"),
+        ],
+        [InlineKeyboardButton("🔙 Menu Utama", callback_data="menu_main")],
+    ]
+    return "\n".join(lines), InlineKeyboardMarkup(keyboard)
+
+
+# ---------------------------------------------------------------------------
+# 6. Bet Tracker & Performance Analytics Formatter
+# ---------------------------------------------------------------------------
+
+def format_tracker_dashboard(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    """Format personal bet tracker history, win rate %, and settled cards."""
+    stats = tracker.get_user_stats(user_id)
+    pending_bets = tracker.get_user_bets(user_id, limit=5, status="PENDING")
+    recent_history = tracker.get_user_bets(user_id, limit=5)
+
+    profit_color = "🟢" if stats.net_profit > 0 else ("🔴" if stats.net_profit < 0 else "⚪")
+    profit_sign = "+" if stats.net_profit > 0 else ""
+
+    lines = [
+        "📈 *DASHBOARD PERSONAL BET TRACKER & WIN-RATE* 📈",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"🏆 *Win Rate:* `{stats.win_rate_pct}%` {_progress_bar(stats.win_rate_pct, 10)}",
+        f"📊 *Rekor:* `{stats.wins} Menang` | `{stats.losses} Kalah` | `{stats.voids} Void`",
+        f"⏳ *Tiket Berjalan:* `{stats.pending} Tiket Menunggu Hasil`",
+        f"💰 *Total Modal Dipasang:* `{_format_rupiah(stats.total_staked)}`",
+        f"{profit_color} *Net Profit / Loss:* `{profit_sign}{_format_rupiah(stats.net_profit)}`",
+        f"📈 *ROI (Return on Investment):* `{profit_sign}{stats.roi_pct}%`",
+        f"🔥 *Status Streak:* `{stats.current_streak}`",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+
+    keyboard: list[list[InlineKeyboardButton]] = []
+
+    if pending_bets:
+        lines.append("⏳ *TIKET BERJALAN (KLIK UNTUK SELESAIKAN HASIL):*")
+        for b in pending_bets:
+            lines.append(
+                f"• *[#{b.id}] {b.ticket_title}* @`{b.odds:.2f}`\n"
+                f"   Pasang: `{_format_rupiah(b.stake_amount)}` | Potensi: `{_format_rupiah(b.potential_return)}`\n"
+                f"   _{b.legs_summary}_\n"
+            )
+            keyboard.append([
+                InlineKeyboardButton(f"✅ #{b.id} WIN", callback_data=f"settle_{b.id}_WIN"),
+                InlineKeyboardButton(f"❌ #{b.id} LOSE", callback_data=f"settle_{b.id}_LOSE"),
+                InlineKeyboardButton(f"🔄 #{b.id} VOID", callback_data=f"settle_{b.id}_VOID"),
+            ])
+    else:
+        lines.append("ℹ️ *Belum ada tiket berjalan.* Setiap kali kamu menganalisis parlay, klik tombol `💾 Simpan ke Tracker` agar tercatat otomatis!")
+
+    keyboard.append([
+        InlineKeyboardButton("🔄 Refresh Tracker", callback_data="menu_tracker"),
+        InlineKeyboardButton("🔙 Menu Utama", callback_data="menu_main"),
+    ])
+
+    return "\n".join(lines), InlineKeyboardMarkup(keyboard)
+
+
+# ---------------------------------------------------------------------------
+# 7. Marquee Match Schedule Formatter
+# ---------------------------------------------------------------------------
+
+def format_schedule_view(schedule_dict: dict[str, list[dict]]) -> tuple[str, InlineKeyboardMarkup]:
+    """Format match schedule across top leagues with 1-click analysis buttons."""
+    lines = [
+        "📅 *JADWAL PERTANDINGAN POPULER & 1-KLIK ANALISIS* 📅",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "Pilih laga di bawah untuk langsung menjalankan analisis mendalam tanpa perlu mengetik:\n",
+    ]
+
+    keyboard: list[list[InlineKeyboardButton]] = []
+
+    for league_name, matches in schedule_dict.items():
+        lines.append(f"🏆 *{league_name}*")
+        for m in matches:
+            lines.append(
+                f"• *{m['home']} vs {m['away']}* `{m['hot_badge']}`\n"
+                f"   ⏰ `{m['time']}` | Pasaran Rekomendasi: *{m['default_pick']}* @`{m['odds']:.2f}`"
+            )
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"🔍 Analisis: {m['home']} vs {m['away']}",
+                    callback_data=f"sched_analyze_{m['id']}",
+                )
+            ])
+        lines.append("")
+
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    keyboard.append([
+        InlineKeyboardButton("⚡ Gabungkan Semua Jadi 1 Mega Parlay", callback_data="sched_parlay_all"),
+    ])
+    keyboard.append([InlineKeyboardButton("🔙 Menu Utama", callback_data="menu_main")])
+
+    return "\n".join(lines), InlineKeyboardMarkup(keyboard)
+
+
+# ---------------------------------------------------------------------------
+# 8. Specific Market Filter Formatter
+# ---------------------------------------------------------------------------
+
+def format_market_filter_view() -> tuple[str, InlineKeyboardMarkup]:
+    """Format specialized market filter dashboard."""
+    lines = [
+        "🎯 *MODE ANALISIS SPESIFIK PASARAN (MARKET FILTER)* 🎯",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "Pilih tipe pasaran fokus yang ingin kamu eksplorasi:\n",
+        "• ⚽ *Over / Under 2.5 Total Gol:* Mengidentifikasi laga potensi banjir gol vs laga defensif alot.",
+        "• 🤝 *Both Teams to Score (BTTS / GG):* Mencari duel tim agresif dengan kelemahan defensif di kedua kubu.",
+        "• 🚩 *Asian Handicap (HDP / Voor):* Menganalisis ketahanan voor dan peluang pesta gol favorit.",
+        "• 🏆 *1X2 Match Winner:* Mencari keunggulan probabilitas murni tim pemenang.",
+    ]
+
+    keyboard = [
+        [
+            InlineKeyboardButton("⚽ Filter: Over / Under Gol", callback_data="market_filter_ou"),
+            InlineKeyboardButton("🤝 Filter: BTTS (GG)", callback_data="market_filter_btts"),
+        ],
+        [
+            InlineKeyboardButton("🚩 Filter: Asian Handicap", callback_data="market_filter_hdp"),
+            InlineKeyboardButton("🏆 Filter: 1X2 Match Winner", callback_data="market_filter_1x2"),
+        ],
+        [InlineKeyboardButton("🔙 Menu Utama", callback_data="menu_main")],
+    ]
+    return "\n".join(lines), InlineKeyboardMarkup(keyboard)
