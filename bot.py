@@ -194,18 +194,49 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_top_picks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /toppicks command."""
-    picks = top_picks.get_daily_top_picks()
-    text, markup = format_top_picks_view(picks)
-    await safe_reply(update, text, reply_markup=markup)
+    """Handle /toppicks command with real-time live SoccerVital feed."""
+    status_msg = None
+    if update.message:
+        status_msg = await update.message.reply_text("⏳ *Mengambil data Top Picks live dari soccervital.com...*", parse_mode="Markdown")
+    try:
+        picks = await top_picks.get_daily_top_picks()
+        text, markup = format_top_picks_view(picks)
+        if status_msg:
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+        await safe_reply(update, text, reply_markup=markup)
+    except Exception as e:
+        if status_msg:
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+        await safe_reply(update, f"❌ Gagal mengambil data Top Picks: {e}")
 
 
 async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /schedule command."""
-    sched_data = schedule.get_marquee_schedule()
-    text, markup = format_schedule_view(sched_data)
-    await safe_reply(update, text, reply_markup=markup)
-
+    """Handle /schedule command with real-time fixture feed."""
+    status_msg = None
+    if update.message:
+        status_msg = await update.message.reply_text("⏳ *Memuat jadwal pertandingan real-time dari soccervital.com...*", parse_mode="Markdown")
+    try:
+        sched_data = await schedule.get_realtime_schedule("today")
+        text, markup = format_schedule_view(sched_data, "today")
+        if status_msg:
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+        await safe_reply(update, text, reply_markup=markup)
+    except Exception as e:
+        if status_msg:
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+        await safe_reply(update, f"❌ Gagal memuat jadwal: {e}")
 
 async def cmd_tracker(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /tracker command."""
@@ -664,7 +695,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     # 2. Top Picks Navigation
     elif data == "menu_top_picks":
-        picks = top_picks.get_daily_top_picks()
+        picks = await top_picks.get_daily_top_picks()
         text, markup = format_top_picks_view(picks)
         try:
             await query.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
@@ -674,22 +705,31 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     elif data.startswith("top_analyze_"):
         pick_id = data.replace("top_analyze_", "")
-        pick_item = top_picks.get_top_pick_by_id(pick_id)
+        pick_item = await top_picks.get_top_pick_by_id(pick_id)
         if pick_item:
             leg = top_picks.convert_top_pick_to_leg(pick_item)
             await execute_analysis_flow(update, [leg])
         return
 
     elif data == "top_parlay_all":
-        picks = top_picks.get_daily_top_picks()
+        picks = await top_picks.get_daily_top_picks()
         all_legs = [top_picks.convert_top_pick_to_leg(p) for p in picks]
         await execute_analysis_flow(update, all_legs)
         return
 
     # 3. Schedule Navigation
-    elif data == "menu_schedule":
-        sched_data = schedule.get_marquee_schedule()
-        text, markup = format_schedule_view(sched_data)
+    elif data in ("menu_schedule", "sched_day_today"):
+        sched_data = await schedule.get_realtime_schedule("today")
+        text, markup = format_schedule_view(sched_data, "today")
+        try:
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
+        except Exception:
+            await safe_reply(update, text, reply_markup=markup)
+        return
+
+    elif data == "sched_day_tomorrow":
+        sched_data = await schedule.get_realtime_schedule("tomorrow")
+        text, markup = format_schedule_view(sched_data, "tomorrow")
         try:
             await query.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
         except Exception:
@@ -698,28 +738,21 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     elif data.startswith("sched_analyze_"):
         match_id = data.replace("sched_analyze_", "")
-        match_info = schedule.get_schedule_match_by_id(match_id)
+        match_info = await schedule.get_schedule_match_by_id(match_id)
         if match_info:
             leg = schedule.convert_schedule_match_to_leg(match_info)
             await execute_analysis_flow(update, [leg])
         return
 
-    elif data == "sched_parlay_all":
-        all_dict = schedule.get_marquee_schedule()
+    elif data in ("sched_parlay_today", "sched_parlay_tomorrow", "sched_parlay_all"):
+        day = "tomorrow" if "tomorrow" in data else "today"
+        all_dict = await schedule.get_realtime_schedule(day)
         all_legs = []
         for l_matches in all_dict.values():
-            for m in l_matches[:2]:  # take top 2 per league for mega parlay
+            for m in l_matches[:2]:  # take top 2 per league
                 all_legs.append(schedule.convert_schedule_match_to_leg(m))
-        await execute_analysis_flow(update, all_legs)
-        return
-
-    # 4. Bankroll Management
-    elif data == "menu_bankroll":
-        text, markup = format_bankroll_calculator_view(chat_id)
-        try:
-            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
-        except Exception:
-            await safe_reply(update, text, reply_markup=markup)
+        if all_legs:
+            await execute_analysis_flow(update, all_legs)
         return
 
     elif data.startswith("set_bankroll_"):

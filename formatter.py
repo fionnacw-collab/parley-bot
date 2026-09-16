@@ -172,25 +172,14 @@ def format_single_match_deep_dive(
         if m.alternative_high_ev_pick:
             lines.append(f"• 💎 *Opsi Cuan Maksimal (+EV Tinggi):* `{m.alternative_high_ev_pick}`")
         lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-
-    keyboard = [
-        [InlineKeyboardButton("💾 Simpan Laga Single ke Tracker", callback_data=f"track_save_single_{index}")],
-        [InlineKeyboardButton("🔙 Kembali ke Ringkasan Tiket", callback_data="back_summary")],
-    ]
-    return "\n".join(lines), InlineKeyboardMarkup(keyboard)
-
-
-# ---------------------------------------------------------------------------
-# 3. Top Picks of the Day Formatter
-# ---------------------------------------------------------------------------
-
 def format_top_picks_view(picks: list[TopPickItem]) -> tuple[str, InlineKeyboardMarkup]:
-    """Format daily AI top picks with 1-click drill-down buttons."""
+    """Format daily factual AI top picks from SoccerVital live feed."""
     lines: list[str] = [
-        "🔥 *AI TOP PICKS OF THE DAY (PILIHAN TERBAIK)* 🔥",
+        "🔥 *AI TOP PICKS OF THE DAY (FAKTUAL & REAL-TIME)* 🔥",
+        "🌐 _Live Intelligence Feed dari SoccerVital.com & Model Poisson xG_",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        "Berikut rekomendasi pertandingan dengan nilai matematis (+EV), "
-        "probabilitas kemenangan tinggi, dan keunggulan taktis tajam hari ini:\n",
+        "Rekomendasi pertandingan riil hari ini dengan probabilitas menang tinggi, "
+        "nilai (+EV), dan proyeksi skor akurat:\n",
     ]
 
     keyboard_buttons: list[list[InlineKeyboardButton]] = []
@@ -198,13 +187,13 @@ def format_top_picks_view(picks: list[TopPickItem]) -> tuple[str, InlineKeyboard
     for idx, p in enumerate(picks, start=1):
         badge = "🛡️" if "Safe" in p.category.value else ("💎" if "+EV" in p.category.value else ("⚽" if "Goals" in p.category.value else "🚩"))
         lines.extend([
-            f"{badge} *#{idx}. {p.match_title}* — _{p.league}_",
-            f"   • ⏰ Kickoff: `{p.kickoff}`",
+            f"{badge} *#{idx}. {p.match_title}*",
+            f"   • 🏆 Liga: `{p.league}` | ⏰ Kickoff: `{p.kickoff}`",
             f"   • 🎯 Pilihan: *{p.pick}* @`{p.odds:.2f}`",
             f"   • 📊 Win Prob: `{p.win_probability * 100:.1f}%` {_progress_bar(p.win_probability * 100, 6)}",
             f"   • 💎 Nilai +EV: `+{p.expected_value * 100:.1f}%` | Keyakinan: `{p.confidence_pct}%`",
             f"   • 💡 Alasan: _{p.tactical_rationale}_",
-            f"   • 📈 Fakta Kunci: _{p.key_stat}_\n",
+            f"   • 📈 Data Kunci: _{p.key_stat}_\n",
         ])
 
         btn_text = f"🔍 Analisis #{idx}: {p.match_title} ({p.pick})"
@@ -217,16 +206,11 @@ def format_top_picks_view(picks: list[TopPickItem]) -> tuple[str, InlineKeyboard
         InlineKeyboardButton("⚡ Gabungkan Semua Top Picks Jadi 1 Parlay", callback_data="top_parlay_all"),
     ])
     keyboard_buttons.append([
+        InlineKeyboardButton("🔄 Refresh Data Live", callback_data="menu_top_picks"),
         InlineKeyboardButton("🔙 Menu Utama", callback_data="menu_main"),
     ])
 
     return "\n".join(lines), InlineKeyboardMarkup(keyboard_buttons)
-
-
-# ---------------------------------------------------------------------------
-# 4. Parlay Optimizer Formatter
-# ---------------------------------------------------------------------------
-
 def format_optimized_parlay_view(
     opt: OptimizedParlayPackage,
     user_id: int | None = None,
@@ -377,38 +361,43 @@ def format_tracker_dashboard(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
     else:
         lines.append("ℹ️ *Belum ada tiket berjalan.* Setiap kali kamu menganalisis parlay, klik tombol `💾 Simpan ke Tracker` agar tercatat otomatis!")
 
-    keyboard.append([
-        InlineKeyboardButton("🔄 Refresh Tracker", callback_data="menu_tracker"),
-        InlineKeyboardButton("🔙 Menu Utama", callback_data="menu_main"),
-    ])
-
-    return "\n".join(lines), InlineKeyboardMarkup(keyboard)
-
-
-# ---------------------------------------------------------------------------
-# 7. Marquee Match Schedule Formatter
-# ---------------------------------------------------------------------------
-
-def format_schedule_view(schedule_dict: dict[str, list[dict]]) -> tuple[str, InlineKeyboardMarkup]:
-    """Format match schedule across top leagues with 1-click analysis buttons."""
+def format_schedule_view(
+    schedule_dict: dict[str, list[dict]],
+    current_day: str = "today",
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Format real-time match schedule across leagues for TODAY or TOMORROW."""
+    day_title = "HARI INI (LIVE)" if current_day == "today" else "BESOK (UPCOMING)"
     lines = [
-        "📅 *JADWAL PERTANDINGAN POPULER & 1-KLIK ANALISIS* 📅",
+        f"📅 *JADWAL PERTANDINGAN REAL-TIME: {day_title}* 📅",
+        "🌐 _Live Fixture Feed dari soccervital.com_",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        "Pilih laga di bawah untuk langsung menjalankan analisis mendalam tanpa perlu mengetik:\n",
+        "Pilih laga di bawah untuk langsung menganalisis taktik & statistik Poisson 1-klik:\n",
     ]
 
     keyboard: list[list[InlineKeyboardButton]] = []
 
+    # Day Toggle Tabs
+    tab_row = [
+        InlineKeyboardButton("▶️ [ Laga Hari Ini ]" if current_day == "today" else "📅 Laga Hari Ini", callback_data="sched_day_today"),
+        InlineKeyboardButton("▶️ [ Laga Besok ]" if current_day == "tomorrow" else "🔮 Laga Besok", callback_data="sched_day_tomorrow"),
+    ]
+    keyboard.append(tab_row)
+
+    total_matches_shown = 0
     for league_name, matches in schedule_dict.items():
+        if not matches:
+            continue
         lines.append(f"🏆 *{league_name}*")
-        for m in matches:
+        for m in matches[:4]:  # show up to 4 top matches per league
+            total_matches_shown += 1
+            badge = m.get("hot_badge", "⚽ Live Match")
             lines.append(
-                f"• *{m['home']} vs {m['away']}* `{m['hot_badge']}`\n"
-                f"   ⏰ `{m['time']}` | Pasaran Rekomendasi: *{m['default_pick']}* @`{m['odds']:.2f}`"
+                f"• *{m['home']} vs {m['away']}* `{badge}`\n"
+                f"   ⏰ `{m['time']}` | Tip Pasar: *{m.get('default_pick', 'Win')}* @`{m.get('odds', 1.85):.2f}`"
             )
             keyboard.append([
                 InlineKeyboardButton(
-                    f"🔍 Analisis: {m['home']} vs {m['away']}",
+                    f"🔍 #{total_matches_shown}: {m['home']} vs {m['away']}",
                     callback_data=f"sched_analyze_{m['id']}",
                 )
             ])
@@ -416,13 +405,11 @@ def format_schedule_view(schedule_dict: dict[str, list[dict]]) -> tuple[str, Inl
 
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     keyboard.append([
-        InlineKeyboardButton("⚡ Gabungkan Semua Jadi 1 Mega Parlay", callback_data="sched_parlay_all"),
+        InlineKeyboardButton("⚡ Gabungkan Jadi 1 Parlay Otomatis", callback_data=f"sched_parlay_{current_day}"),
     ])
     keyboard.append([InlineKeyboardButton("🔙 Menu Utama", callback_data="menu_main")])
 
     return "\n".join(lines), InlineKeyboardMarkup(keyboard)
-
-
 # ---------------------------------------------------------------------------
 # 8. Specific Market Filter Formatter
 # ---------------------------------------------------------------------------
