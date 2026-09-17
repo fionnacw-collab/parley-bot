@@ -63,13 +63,13 @@ class DeepMatchAnalysis:
     poisson: PoissonProjection
     best_sbobet_pick: SbobetMarketRecommendation
     all_sbobet_markets: list[SbobetMarketRecommendation]
+    predicted_score: str = ""
     tactical_summary: str = ""
     tactical_clash: str = ""
     key_weakness: str = ""
     trap_warning: str = ""
     is_trap: bool = False
     recommended_stake_pct: float = 0.035  # e.g. 3.5% of bankroll
-
 
 @dataclass
 class ParlayAnalysisReport:

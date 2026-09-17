@@ -42,7 +42,7 @@ def format_single_match_analysis(
     stake_rp = max(10000.0, bankroll * analysis.recommended_stake_pct)
     profit_rp = (stake_rp * best.projected_odds) - stake_rp
 
-    top_score = p.top_exact_scores[0][0] if p.top_exact_scores else "2 - 1"
+    top_score = analysis.predicted_score or (p.top_exact_scores[0][0] if p.top_exact_scores else "2 - 1")
 
     lines = [
         f"⚽ *{m.home.upper()} vs {m.away.upper()}*",
@@ -118,12 +118,11 @@ def format_parlay_analysis(
 
     for idx, m in enumerate(top_picks, start=1):
         best = m.best_sbobet_pick
-        p = m.poisson
-        top_score = p.top_exact_scores[0][0] if p.top_exact_scores else "2 - 1"
+        score = m.predicted_score or (m.poisson.top_exact_scores[0][0] if m.poisson.top_exact_scores else "2 - 1")
         lines.extend([
             f"*{idx}. {m.match.clean_title()}*",
             f"   👉 *{best.selection}* @`{best.projected_odds:.2f}` _({best.sbobet_line_display})_",
-            f"   🎯 Prediksi Skor: `{top_score}` | Peluang: `{int(best.win_probability * 100)}%`\n",
+            f"   🎯 Prediksi Skor: `{score}` | Peluang: `{int(best.win_probability * 100)}%`\n",
         ])
 
     # Construct Clean Parlay Packages
@@ -177,8 +176,7 @@ def format_parlay_analysis(
         ])
         for i, m in enumerate(report.matches, start=1):
             best = m.best_sbobet_pick
-            p = m.poisson
-            score = p.top_exact_scores[0][0] if p.top_exact_scores else "2 - 1"
+            score = m.predicted_score or (m.poisson.top_exact_scores[0][0] if m.poisson.top_exact_scores else "2 - 1")
             lines.append(
                 f"`{i:02d}.` *{m.match.home} vs {m.match.away}* $\\rightarrow$ `{best.selection}` @`{best.projected_odds:.2f}` | Skor: `{score}`"
             )
