@@ -69,8 +69,7 @@ _ACTIVE_ANALYSES: dict[int, tuple[str, DeepMatchAnalysis | ParlayAnalysisReport]
 MAIN_REPLY_KEYBOARD = ReplyKeyboardMarkup(
     [
         [KeyboardButton("📅 Jadwal Laga (Hari Ini / Besok)"), KeyboardButton("📈 Bet Tracker & Live Skor")],
-        [KeyboardButton("💵 Atur Modal (Bankroll)"), KeyboardButton("⚽ Contoh Analisis SBOBET")],
-        [KeyboardButton("📖 Panduan & Cara Pakai")],
+        [KeyboardButton("💵 Atur Modal (Bankroll)"), KeyboardButton("📖 Panduan & Cara Pakai")],
     ],
     resize_keyboard=True,
     is_persistent=True,
@@ -86,7 +85,6 @@ def get_main_menu_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("📈 Bet Tracker & Skor Live", callback_data="menu_tracker"),
                 InlineKeyboardButton("💵 Atur Modal Bankroll", callback_data="menu_bankroll"),
             ],
-            [InlineKeyboardButton("⚽ Contoh Analisis SBOBET (1-Klik)", callback_data="menu_demo")],
             [
                 InlineKeyboardButton("📖 Panduan Penggunaan", callback_data="menu_help"),
                 InlineKeyboardButton("📊 Status Server & AI", callback_data="menu_status"),
@@ -150,7 +148,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`1. Arsenal vs Chelsea`\n"
         "`2. Real Madrid vs Barcelona`\n"
         "`3. Inter Milan vs Juventus`\n"
-        "_(Bot otomatis memilihkan pasaran terbaik SBOBET dan meracik tiket Mix Parlay)_\n\n"
+        "_(Bot otomatis membedah seluruh laga, memilihkan Top 8 pasaran SBOBET terbaik, dan meracik tiket Mix Parlay)_\n\n"
         "3️⃣ *Kirim Foto Screenshot / File PDF Slip:* Bot langsung membaca seluruh laga!\n"
         "4️⃣ *Pilih 1-Klik dari Jadwal Real-Time Hari Ini!*"
     )
@@ -226,12 +224,6 @@ async def cmd_bankroll(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text, markup = format_bankroll_view(chat_id)
     await safe_reply(update, text, reply_markup=markup)
-
-
-async def cmd_demo(update: Update):
-    """Run an instant 1-click demonstration analysis for Arsenal vs Chelsea."""
-    m = ExtractedMatch(home="Arsenal", away="Chelsea")
-    await run_execution_flow(update, [m])
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -320,7 +312,7 @@ async def run_execution_flow(
             await safe_reply(update, text, reply_markup=markup)
 
         else:
-            # Multi-Match Mix Parlay Analysis
+            # Multi-Match Mix Parlay & Top 8 Analysis
             parlay = sbobet_engine.analyze_parlay_pipeline(matches)
             _ACTIVE_ANALYSES[chat_id] = ("parlay", parlay)
 
@@ -362,9 +354,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     elif text in ("💵 Atur Modal (Bankroll)", "/bankroll"):
         await cmd_bankroll(update, context)
-        return
-    elif text in ("⚽ Contoh Analisis SBOBET", "/demo"):
-        await cmd_demo(update)
         return
     elif text in ("📖 Panduan & Cara Pakai", "/help"):
         await cmd_help(update, context)
@@ -681,10 +670,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         await safe_reply(update, text, reply_markup=get_main_menu_keyboard())
         return
 
-    # 5. Demo, Help, Status
-    elif data == "menu_demo":
-        await cmd_demo(update)
-        return
+    # 5. Help, Status
     elif data == "menu_help":
         await cmd_help(update, context)
         return
@@ -791,7 +777,6 @@ async def main():
             BotCommand("schedule", "📅 Jadwal Laga (Hari Ini & Besok)"),
             BotCommand("tracker", "📈 Bet Tracker & Live Score Monitor"),
             BotCommand("bankroll", "💵 Atur Modal & Staking Rp"),
-            BotCommand("demo", "⚽ Contoh Analisis SBOBET (1-Klik)"),
             BotCommand("help", "📖 Panduan Penggunaan"),
             BotCommand("status", "📊 Cek Status Server"),
         ]
@@ -806,7 +791,6 @@ async def main():
     app.add_handler(CommandHandler("schedule", cmd_schedule))
     app.add_handler(CommandHandler("tracker", cmd_tracker))
     app.add_handler(CommandHandler("bankroll", cmd_bankroll))
-    app.add_handler(CommandHandler("demo", lambda u, c: cmd_demo(u)))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("status", cmd_status))
 
@@ -819,7 +803,6 @@ async def main():
     # 4. Start Live Monitor Background Task & Polling
     async with app:
         await app.start()
-        # Start background worker for live match timeline tracking & notifications
         monitor_task = asyncio.create_task(start_live_monitor_worker(app.bot))
 
         await app.updater.start_polling()

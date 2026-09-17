@@ -106,59 +106,108 @@ def format_single_match_analysis(
 
 
 # ---------------------------------------------------------------------------
-# 2. Multi-Match Mix Parlay Formatter
+# 2. Multi-Match Mix Parlay & Top 8 Executive Formatter
 # ---------------------------------------------------------------------------
 
 def format_parlay_analysis(
     report: ParlayAnalysisReport,
     user_id: int | None = None,
 ) -> tuple[str, InlineKeyboardMarkup]:
-    """Format an optimized Mix Parlay report constructed from SBOBET best picks."""
+    """Format rich executive Top 8 picks, full match table, and parlay packages."""
     bankroll = tracker.get_user_bankroll(user_id) if user_id else 1000000.0
-    rec_stake = bankroll * report.recommended_kelly_stake
-    pot_return = rec_stake * report.combined_odds
-    net_profit = pot_return - rec_stake
+    total_matches = len(report.matches)
+
+    # Sort matches by analytical quality: (EV * 0.6 + WinProb * 0.4)
+    sorted_matches = sorted(
+        report.matches,
+        key=lambda m: (m.best_sbobet_pick.expected_value * 0.6) + (m.best_sbobet_pick.win_probability * 0.4),
+        reverse=True,
+    )
+
+    top_count = min(8, total_matches)
+    top_picks = sorted_matches[:top_count]
 
     lines = [
-        f"🏆 *REKOMENDASI TIKET MIX PARLAY SBOBET ({len(report.matches)} LAGA)* 🏆",
+        f"🏆 *HASIL ANALISIS SBOBET: {total_matches} PERTANDINGAN* 🏆",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        f"💰 *Total Odds Tiket:* `@{report.combined_odds:.2f}`",
-        f"🎯 *True Win Probability:* `{report.combined_true_probability * 100:.1f}%` {_progress_bar(report.combined_true_probability * 100, 8)}",
-        f"⚖️ *Fair Odds (Bebas Komisi):* `@{report.combined_fair_odds:.2f}`",
-        f"💎 *Overall +EV:* `+{report.overall_expected_value * 100:.1f}%`",
-        f"🛡️ *Kategori Resiko:* `{report.risk_tier}`",
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        "💵 *REKOMENDASI PASANG RUPIAH:*",
-        f"• 💼 Modal Kamu: `{_format_rupiah(bankroll)}`",
-        f"• 💰 Saran Pasang (Kelly): `{_format_rupiah(rec_stake)}` _({report.recommended_kelly_stake*100:.1f}% modal)_",
-        f"• 🎯 Estimasi Profit Bersih: `+{_format_rupiah(net_profit)}`",
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        f"📝 *Ringkasan Strategi:*\n_{report.executive_summary}_\n",
-        "📋 *DAFTAR PASARAN PILIHAN AI SETIAP LAGA:*",
+        f"🔥 *TOP {top_count} REKOMENDASI TERBAIK SBOBET (HIGHEST +EV & WIN RATE)* 🔥\n",
     ]
 
-    keyboard_buttons: list[list[InlineKeyboardButton]] = []
-
-    for idx, m in enumerate(report.matches, start=1):
+    for idx, m in enumerate(top_picks, start=1):
         best = m.best_sbobet_pick
-        lines.append(
-            f"{idx}. *{m.match.clean_title()}*\n"
-            f"   👉 *{best.selection}* @`{best.projected_odds:.2f}` _({best.sbobet_line_display})_\n"
-            f"   Win Prob: `{int(best.win_probability*100)}%` | EV: `+{best.expected_value*100:.1f}%`"
-        )
-        btn_text = f"🔍 Bedah #{idx}: {m.match.home} vs {m.match.away}"
-        keyboard_buttons.append([InlineKeyboardButton(btn_text, callback_data=f"drill_match_{idx-1}")])
+        p = m.poisson
+        top_score = p.top_exact_scores[0][0] if p.top_exact_scores else "2 - 1"
+        lines.extend([
+            f"*{idx}. {m.match.clean_title()}*",
+            f"   👉 *Pilihan SBOBET:* `{best.selection}` @`{best.projected_odds:.2f}` _({best.sbobet_line_display})_",
+            f"   📊 *xG:* `{m.match.home} ({p.home_xg:.2f})` vs `({p.away_xg:.2f}) {m.match.away}` | Prediksi Skor: `{top_score}`",
+            f"   🎯 *Win Prob:* `{best.win_probability * 100:.1f}%` {_progress_bar(best.win_probability * 100, 6)} | Nilai +EV: `+{best.expected_value * 100:.1f}%`",
+            f"   💡 *Alasan:* _{best.reasoning}_\n",
+        ])
 
-    lines.append("")
-    lines.append("👇 *Pilih menu tindakan:*")
+    # If more than 8 matches, provide complete list summary
+    if total_matches > 8:
+        lines.extend([
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"📋 *RINGKASAN LENGKAP SELURUH {total_matches} PERTANDINGAN:*",
+        ])
+        for i, m in enumerate(report.matches, start=1):
+            best = m.best_sbobet_pick
+            p = m.poisson
+            score = p.top_exact_scores[0][0] if p.top_exact_scores else "2 - 1"
+            lines.append(
+                f"`{i:02d}.` *{m.match.home} vs {m.match.away}* $\\rightarrow$ `{best.selection}` @`{best.projected_odds:.2f}` | Pred: `{score}` | Prob: `{int(best.win_probability*100)}%`"
+            )
+        lines.append("")
 
-    keyboard_buttons.append([
-        InlineKeyboardButton("💾 Simpan Tiket & Pantau Live Score", callback_data="track_save_parlay"),
+    # Construct Parlay Packages
+    lines.extend([
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "💰 *SARAN PAKET MIX PARLAY REKOMENDASI:*",
     ])
-    keyboard_buttons.append([
-        InlineKeyboardButton("💵 Atur Modal Bankroll", callback_data="menu_bankroll"),
-        InlineKeyboardButton("🔙 Menu Utama", callback_data="menu_main"),
+
+    # 1. Conservative Safe Package (Top 4 Highest Probability)
+    safe_4 = sorted(report.matches, key=lambda m: m.best_sbobet_pick.win_probability, reverse=True)[: min(4, total_matches)]
+    safe_odds = 1.0
+    safe_prob = 1.0
+    for s in safe_4:
+        safe_odds *= s.best_sbobet_pick.projected_odds
+        safe_prob *= s.best_sbobet_pick.win_probability
+
+    safe_stake = max(10000.0, bankroll * 0.035)
+    safe_profit = (safe_stake * safe_odds) - safe_stake
+
+    lines.extend([
+        f"🟢 *1. Paket Parlay Aman ({len(safe_4)}-Laga)*",
+        f"• Total Odds: `@{safe_odds:.2f}` | Peluang Tembus: `{safe_prob * 100:.1f}%` {_progress_bar(safe_prob * 100, 6)}",
+        f"• Saran Pasang: `{_format_rupiah(safe_stake)}` $\\rightarrow$ *Potensi Cuan: `+{_format_rupiah(safe_profit)}`*",
+        "• *Pilihan Laga:* " + ", ".join(f"`{s.match.home} ({s.best_sbobet_pick.selection})`" for s in safe_4),
+        "",
     ])
+
+    # 2. Maximum Value Sharp Package (Top 8 EV)
+    val_odds = 1.0
+    val_prob = 1.0
+    for v in top_picks:
+        val_odds *= v.best_sbobet_pick.projected_odds
+        val_prob *= v.best_sbobet_pick.win_probability
+
+    val_stake = max(10000.0, bankroll * 0.015)
+    val_profit = (val_stake * val_odds) - val_stake
+
+    lines.extend([
+        f"💎 *2. Paket Parlay Cuan ({len(top_picks)}-Laga Top Picks +EV)*",
+        f"• Total Odds: `@{val_odds:.2f}`",
+        f"• Saran Pasang: `{_format_rupiah(val_stake)}` $\\rightarrow$ *Potensi Cuan: `+{_format_rupiah(val_profit)}`*",
+    ])
+
+    keyboard_buttons: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton("💾 Simpan Tiket & Pantau Skor Live", callback_data="track_save_parlay")],
+        [
+            InlineKeyboardButton("💵 Atur Modal Bankroll", callback_data="menu_bankroll"),
+            InlineKeyboardButton("🔙 Menu Utama", callback_data="menu_main"),
+        ],
+    ]
 
     return "\n".join(lines), InlineKeyboardMarkup(keyboard_buttons)
 
