@@ -1,13 +1,14 @@
 """
-tracker.py — Persistent SQLite storage for User Bankroll, Bet Tracking, and Win-Rate Analytics.
+tracker.py — Persistent SQLite Storage for User Bankroll, Bet Slips, and Live Match Tracking.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from datetime import datetime
-from models import TrackedBet, UserStats
+from models import TrackedSlip, UserStats
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parley_data.db")
 
@@ -19,7 +20,7 @@ def get_connection() -> sqlite3.Connection:
 
 
 def init_db():
-    """Initialize database tables for user settings and bet tracker."""
+    """Initialize SQLite tables for user bankroll settings and slip tracking."""
     with get_connection() as conn:
         conn.execute(
             """
@@ -33,18 +34,19 @@ def init_db():
         )
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS tracked_bets (
+            CREATE TABLE IF NOT EXISTS tracked_slips (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
-                ticket_title TEXT NOT NULL,
-                legs_summary TEXT NOT NULL,
-                odds REAL NOT NULL,
+                slip_title TEXT NOT NULL,
+                matches_json TEXT NOT NULL,
+                total_odds REAL NOT NULL,
                 stake_amount REAL NOT NULL,
                 potential_return REAL NOT NULL,
                 status TEXT DEFAULT 'PENDING',
-                profit_loss REAL DEFAULT 0.0,
+                live_status_summary TEXT DEFAULT '',
                 created_at TEXT NOT NULL,
-                settled_at TEXT DEFAULT ''
+                settled_at TEXT DEFAULT '',
+                profit_loss REAL DEFAULT 0.0
             )
             """
         )
@@ -56,120 +58,69 @@ def init_db():
 # ---------------------------------------------------------------------------
 
 def get_user_bankroll(user_id: int) -> float:
-    """Retrieve user bankroll in Rupiah. Defaults to Rp 1.000.000."""
+    """Get user bankroll in IDR. Defaults to Rp 1.000.000."""
     init_db()
     with get_connection() as conn:
-        row = conn.execute(
-            "SELECT bankroll FROM user_bankroll WHERE user_id = ?",
-            (user_id,),
-        ).fetchone()
+        row = conn.execute("SELECT bankroll FROM user_bankroll WHERE user_id = ?", (user_id,)).fetchone()
         if row:
             return float(row["bankroll"])
-        # Insert default 1,000,000 IDR
-        conn.execute(
-            "INSERT OR IGNORE INTO user_bankroll (user_id, bankroll) VALUES (?, 1000000.0)",
-            (user_id,),
-        )
+        conn.execute("INSERT OR IGNORE INTO user_bankroll (user_id, bankroll) VALUES (?, 1000000.0)", (user_id,))
         conn.commit()
         return 1000000.0
 
 
 def set_user_bankroll(user_id: int, amount: float) -> float:
-    """Set or update user bankroll in Rupiah."""
+    """Set or update user bankroll."""
     init_db()
-    clean_amount = max(10000.0, float(amount))  # Minimum Rp 10.000
+    clean = max(10000.0, float(amount))
     with get_connection() as conn:
         conn.execute(
             """
             INSERT INTO user_bankroll (user_id, bankroll, updated_at)
             VALUES (?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(user_id) DO UPDATE SET
-                bankroll = excluded.bankroll,
-                updated_at = CURRENT_TIMESTAMP
+            ON CONFLICT(user_id) DO UPDATE SET bankroll = excluded.bankroll, updated_at = CURRENT_TIMESTAMP
             """,
-            (user_id, clean_amount),
+            (user_id, clean),
         )
         conn.commit()
-    return clean_amount
+    return clean
 
 
 # ---------------------------------------------------------------------------
-# Bet Tracking & Settlement
+# Slip Tracking & Live Status
 # ---------------------------------------------------------------------------
 
-def save_bet(
+def save_slip(
     user_id: int,
-    ticket_title: str,
-    legs_summary: str,
-    odds: float,
+    slip_title: str,
+    matches_data: list[dict],
+    total_odds: float,
     stake_amount: float,
 ) -> int:
-    """Save an analyzed bet ticket into the tracker database."""
+    """Save an analyzed slip into the persistent tracker database."""
     init_db()
     now_str = datetime.now().strftime("%d-%m-%Y %H:%M")
-    potential_return = round(stake_amount * odds, 2)
+    pot_return = round(stake_amount * total_odds, 2)
+    matches_json_str = json.dumps(matches_data)
 
     with get_connection() as conn:
-        cursor = conn.execute(
+        cur = conn.execute(
             """
-            INSERT INTO tracked_bets (
-                user_id, ticket_title, legs_summary, odds, stake_amount,
-                potential_return, status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?)
+            INSERT INTO tracked_slips (
+                user_id, slip_title, matches_json, total_odds, stake_amount,
+                potential_return, status, live_status_summary, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'PENDING', 'Menunggu Kickoff ⏳', ?)
             """,
-            (user_id, ticket_title, legs_summary, odds, stake_amount, potential_return, now_str),
+            (user_id, slip_title, matches_json_str, total_odds, stake_amount, pot_return, now_str),
         )
         conn.commit()
-        return cursor.lastrowid
+        return cur.lastrowid
 
 
-def settle_bet(bet_id: int, user_id: int, result: str) -> bool:
-    """
-    Settle a bet with 'WIN', 'LOSE', or 'VOID'.
-    Updates profit/loss and settled_at timestamp.
-    """
+def get_user_slips(user_id: int, limit: int = 10, status: str | None = None) -> list[TrackedSlip]:
+    """Retrieve tracked slips for a user."""
     init_db()
-    clean_res = result.upper()
-    if clean_res not in ("WIN", "LOSE", "VOID"):
-        return False
-
-    now_str = datetime.now().strftime("%d-%m-%Y %H:%M")
-
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT stake_amount, potential_return FROM tracked_bets WHERE id = ? AND user_id = ?",
-            (bet_id, user_id),
-        ).fetchone()
-
-        if not row:
-            return False
-
-        stake = float(row["stake_amount"])
-        pot_return = float(row["potential_return"])
-
-        if clean_res == "WIN":
-            profit_loss = round(pot_return - stake, 2)
-        elif clean_res == "LOSE":
-            profit_loss = -round(stake, 2)
-        else:  # VOID
-            profit_loss = 0.0
-
-        conn.execute(
-            """
-            UPDATE tracked_bets
-            SET status = ?, profit_loss = ?, settled_at = ?
-            WHERE id = ? AND user_id = ?
-            """,
-            (clean_res, profit_loss, now_str, bet_id, user_id),
-        )
-        conn.commit()
-        return True
-
-
-def get_user_bets(user_id: int, limit: int = 10, status: str | None = None) -> list[TrackedBet]:
-    """Retrieve user bets from history."""
-    init_db()
-    query = "SELECT * FROM tracked_bets WHERE user_id = ?"
+    query = "SELECT * FROM tracked_slips WHERE user_id = ?"
     params: list = [user_id]
 
     if status:
@@ -181,61 +132,116 @@ def get_user_bets(user_id: int, limit: int = 10, status: str | None = None) -> l
 
     with get_connection() as conn:
         rows = conn.execute(query, params).fetchall()
-        bets: list[TrackedBet] = []
+        slips: list[TrackedSlip] = []
         for r in rows:
-            bets.append(
-                TrackedBet(
+            slips.append(
+                TrackedSlip(
                     id=r["id"],
                     user_id=r["user_id"],
-                    ticket_title=r["ticket_title"],
-                    legs_summary=r["legs_summary"],
-                    odds=r["odds"],
+                    slip_title=r["slip_title"],
+                    matches_json=r["matches_json"],
+                    total_odds=r["total_odds"],
                     stake_amount=r["stake_amount"],
                     potential_return=r["potential_return"],
                     status=r["status"],
+                    live_status_summary=r["live_status_summary"] or "",
                     created_at=r["created_at"],
                     settled_at=r["settled_at"] or "",
                     profit_loss=r["profit_loss"],
                 )
             )
-        return bets
+        return slips
 
 
-def get_bet_by_id(bet_id: int, user_id: int) -> TrackedBet | None:
-    """Get single bet by ID."""
+def get_active_slips_all_users() -> list[TrackedSlip]:
+    """Retrieve all pending or live slips across all users for the background live monitor."""
     init_db()
     with get_connection() as conn:
-        r = conn.execute(
-            "SELECT * FROM tracked_bets WHERE id = ? AND user_id = ?",
-            (bet_id, user_id),
-        ).fetchone()
-        if not r:
-            return None
-        return TrackedBet(
-            id=r["id"],
-            user_id=r["user_id"],
-            ticket_title=r["ticket_title"],
-            legs_summary=r["legs_summary"],
-            odds=r["odds"],
-            stake_amount=r["stake_amount"],
-            potential_return=r["potential_return"],
-            status=r["status"],
-            created_at=r["created_at"],
-            settled_at=r["settled_at"] or "",
-            profit_loss=r["profit_loss"],
-        )
+        rows = conn.execute(
+            "SELECT * FROM tracked_slips WHERE status IN ('PENDING', 'LIVE') ORDER BY id ASC"
+        ).fetchall()
+        slips: list[TrackedSlip] = []
+        for r in rows:
+            slips.append(
+                TrackedSlip(
+                    id=r["id"],
+                    user_id=r["user_id"],
+                    slip_title=r["slip_title"],
+                    matches_json=r["matches_json"],
+                    total_odds=r["total_odds"],
+                    stake_amount=r["stake_amount"],
+                    potential_return=r["potential_return"],
+                    status=r["status"],
+                    live_status_summary=r["live_status_summary"] or "",
+                    created_at=r["created_at"],
+                    settled_at=r["settled_at"] or "",
+                    profit_loss=r["profit_loss"],
+                )
+            )
+        return slips
 
 
-def delete_bet(bet_id: int, user_id: int) -> bool:
-    """Delete a tracked bet."""
+def update_slip_live_status(slip_id: int, live_summary: str, status: str = "LIVE"):
+    """Update live score summary on a tracked slip."""
     init_db()
     with get_connection() as conn:
-        cursor = conn.execute(
-            "DELETE FROM tracked_bets WHERE id = ? AND user_id = ?",
-            (bet_id, user_id),
+        conn.execute(
+            "UPDATE tracked_slips SET live_status_summary = ?, status = ? WHERE id = ?",
+            (live_summary, status, slip_id),
         )
         conn.commit()
-        return cursor.rowcount > 0
+
+
+def settle_slip(slip_id: int, user_id: int, result: str) -> bool:
+    """Settle a slip with 'WIN', 'LOSE', or 'VOID'."""
+    init_db()
+    clean_res = result.upper()
+    if clean_res not in ("WIN", "LOSE", "VOID"):
+        return False
+
+    now_str = datetime.now().strftime("%d-%m-%Y %H:%M")
+
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT stake_amount, potential_return FROM tracked_slips WHERE id = ? AND user_id = ?",
+            (slip_id, user_id),
+        ).fetchone()
+
+        if not row:
+            return False
+
+        stake = float(row["stake_amount"])
+        pot_return = float(row["potential_return"])
+
+        if clean_res == "WIN":
+            profit_loss = round(pot_return - stake, 2)
+            summary = f"SELESAI: WIN (Profit +Rp {int(profit_loss):,}) ✅".replace(",", ".")
+        elif clean_res == "LOSE":
+            profit_loss = -round(stake, 2)
+            summary = f"SELESAI: LOSE (-Rp {int(stake):,}) ❌".replace(",", ".")
+        else:
+            profit_loss = 0.0
+            summary = "SELESAI: VOID / REFUND 🔄"
+
+        conn.execute(
+            """
+            UPDATE tracked_slips
+            SET status = ?, profit_loss = ?, settled_at = ?, live_status_summary = ?
+            WHERE id = ? AND user_id = ?
+            """,
+            (clean_res, profit_loss, now_str, summary, slip_id, user_id),
+        )
+        conn.commit()
+        return True
+
+
+def delete_slip(slip_id: int, user_id: int) -> bool:
+    """Delete a tracked slip."""
+    init_db()
+    with get_connection() as conn:
+        cur = conn.execute("DELETE FROM tracked_slips WHERE id = ? AND user_id = ?", (slip_id, user_id))
+        conn.commit()
+        return cur.rowcount > 0
 
 
 # ---------------------------------------------------------------------------
@@ -247,7 +253,7 @@ def get_user_stats(user_id: int) -> UserStats:
     init_db()
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT status, stake_amount, profit_loss FROM tracked_bets WHERE user_id = ? ORDER BY id ASC",
+            "SELECT status, stake_amount, profit_loss FROM tracked_slips WHERE user_id = ? ORDER BY id ASC",
             (user_id,),
         ).fetchall()
 
@@ -258,7 +264,7 @@ def get_user_stats(user_id: int) -> UserStats:
     wins = sum(1 for r in rows if r["status"] == "WIN")
     losses = sum(1 for r in rows if r["status"] == "LOSE")
     voids = sum(1 for r in rows if r["status"] == "VOID")
-    pending = sum(1 for r in rows if r["status"] == "PENDING")
+    pending = sum(1 for r in rows if r["status"] in ("PENDING", "LIVE"))
 
     total_staked = sum(float(r["stake_amount"]) for r in rows if r["status"] in ("WIN", "LOSE", "VOID"))
     net_profit = sum(float(r["profit_loss"]) for r in rows if r["status"] in ("WIN", "LOSE", "VOID"))
@@ -268,7 +274,6 @@ def get_user_stats(user_id: int) -> UserStats:
     win_rate = (wins / settled_count * 100) if settled_count > 0 else 0.0
     roi = (net_profit / total_staked * 100) if total_staked > 0 else 0.0
 
-    # Calculate current win/loss streak
     streak_type = ""
     streak_count = 0
     for r in reversed(rows):
