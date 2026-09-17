@@ -60,10 +60,48 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ParleyBot")
 
-# In-memory storage for active analysis sessions: chat_id -> (type, data)
 _ACTIVE_ANALYSES: dict[int, tuple[str, DeepMatchAnalysis | ParlayAnalysisReport]] = {}
 
-# ---------------------------------------------------------------------------
+
+def parse_currency_amount(text: str) -> float | None:
+    """
+    Parse informal Indonesian currency inputs:
+    - '40.000', '40,000', '40000' -> 40000.0
+    - '50k', '50rb', '500k', '500rb' -> 50000.0 / 500000.0
+    - '1jt', '1.5jt', '2 juta', '2.5jt' -> 1000000.0 / 1500000.0 / 2500000.0
+    - 'Rp 40.000', 'rp40.000' -> 40000.0
+    """
+    import re
+    clean = text.lower().strip()
+    if clean.startswith("/bankroll"):
+        clean = clean.replace("/bankroll", "").strip()
+    if clean.startswith("rp"):
+        clean = clean[2:].strip()
+
+    m_jt = re.match(r"^([\d.,]+)\s*(?:jt|juta)$", clean)
+    if m_jt:
+        num_part = m_jt.group(1).replace(",", ".")
+        try:
+            return float(num_part) * 1_000_000.0
+        except Exception:
+            pass
+
+    m_k = re.match(r"^([\d.,]+)\s*(?:k|rb|ribu)$", clean)
+    if m_k:
+        num_part = m_k.group(1).replace(",", ".")
+        try:
+            return float(num_part) * 1_000.0
+        except Exception:
+            pass
+
+    if re.match(r"^[\d.,]+$", clean):
+        raw_digits = clean.replace(".", "").replace(",", "").strip()
+        if raw_digits.isdigit():
+            val = float(raw_digits)
+            if val >= 1000.0:
+                return val
+
+    return None
 # Persistent Bottom Reply Keyboard
 # ---------------------------------------------------------------------------
 MAIN_REPLY_KEYBOARD = ReplyKeyboardMarkup(
@@ -259,9 +297,9 @@ async def cmd_bankroll(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     args = context.args if context else []
     if args:
-        try:
-            val_str = args[0].replace(".", "").replace(",", "").replace("Rp", "").replace("rp", "")
-            amount = float(val_str)
+        raw_arg = " ".join(args)
+        amount = parse_currency_amount(raw_arg)
+        if amount:
             saved = tracker.set_user_bankroll(chat_id, amount)
             await safe_reply(
                 update,
@@ -270,8 +308,6 @@ async def cmd_bankroll(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=get_main_menu_keyboard(),
             )
             return
-        except Exception:
-            pass
 
     text, markup = format_bankroll_view(chat_id)
     await safe_reply(update, text, reply_markup=markup)
@@ -410,22 +446,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await cmd_help(update, context)
         return
 
-    # Custom Bankroll setting: e.g. "Rp 2.000.000" or numeric
-    if text.lower().startswith("rp ") or (text.isdigit() and int(text) >= 10000):
-        try:
-            val_str = text.lower().replace("rp", "").replace(".", "").replace(",", "").strip()
-            amount = float(val_str)
-            saved = tracker.set_user_bankroll(update.effective_chat.id, amount)
-            await update.message.reply_text(
-                f"✅ *Bankroll berhasil diatur menjadi:* `{_format_rupiah(saved)}`\n"
-                "Kalkulasi alokasi modal Kelly pada analisis laga berikutnya akan otomatis mengikuti nominal ini.",
-                reply_markup=get_main_menu_keyboard(),
-                parse_mode="Markdown",
-            )
-            return
-        except Exception:
-            pass
-
+    # Check if user typed a currency amount to update bankroll (e.g. "40.000", "50k", "Rp 500.000", "1.5jt")
+    bankroll_amount = parse_currency_amount(text)
+    if bankroll_amount:
+        saved = tracker.set_user_bankroll(update.effective_chat.id, bankroll_amount)
+        await update.message.reply_text(
+            f"✅ *Bankroll berhasil diatur menjadi:* `{_format_rupiah(saved)}`\n"
+            "Seluruh rekomendasi nominal pasang Rupiah di tiket parlay dan single akan otomatis dihitung berdasarkan modal ini.",
+            reply_markup=get_main_menu_keyboard(),
+            parse_mode="Markdown",
+        )
+        return
     # Extract matches via Universal Gemini Router
     status_msg = await update.message.reply_text("🔍 *Membaca pertandingan via AI...*", parse_mode="Markdown")
     try:
