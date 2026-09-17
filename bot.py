@@ -61,6 +61,7 @@ logging.basicConfig(
 logger = logging.getLogger("ParleyBot")
 
 _ACTIVE_ANALYSES: dict[int, tuple[str, DeepMatchAnalysis | ParlayAnalysisReport]] = {}
+_BOT_ACTIVE_STATE: bool = True
 
 
 def parse_currency_amount(text: str) -> float | None:
@@ -342,22 +343,50 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /status command showing system diagnostics."""
+async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Pause/Turn OFF bot directly from Telegram."""
+    global _BOT_ACTIVE_STATE
+    _BOT_ACTIVE_STATE = False
+    await safe_reply(
+        update,
+        "🔴 *BOT DINONAKTIFKAN (MODE TIDUR / OFF)*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Bot sekarang dalam mode jeda dan tidak akan memproses analisa pertandingan.\n\n"
+        "👉 Ketik **/on** atau **/resume** kapan saja untuk menyalakan kembali bot.",
+    )
+
+
+async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Resume/Turn ON bot directly from Telegram."""
+    global _BOT_ACTIVE_STATE
+    _BOT_ACTIVE_STATE = True
+    await safe_reply(
+        update,
+        "🟢 *BOT TELAH MENYALA KEMBALI (ACTIVE / ON)*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Bot siap melayani analisis pertandingan, jadwal, dan pemantau skor live!",
+        reply_markup=get_main_menu_keyboard(),
+    )
+
+
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /status command showing system diagnostics."""
     active_slips = tracker.get_active_slips_all_users()
+    state_str = "🟢 AKTIF / ON" if _BOT_ACTIVE_STATE else "🔴 PAUSE / OFF"
     text = (
         "⚡ *STATUS SISTEM BOT 24/7* ⚡\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• 🔌 *Power Switch:* {state_str}\n"
         f"• 🤖 *AI Engine:* 🟢 Google Gemini ({settings.gemini_model}) - 100% Gratis\n"
         f"• 🌐 *Live Match Feed:* 🟢 soccervital.com (Terhubung)\n"
         f"• 🛰️ *Pemantau Slip Live:* 🟢 Aktif ({len(active_slips)} tiket dipantau)\n"
         f"• 🌐 *Cloud Health Server:* Port `{settings.port}` (Aktif)\n\n"
-        "Status: *Berjalan Normal 24/7 Non-Stop* ✅"
+        "Gunakan **/off** untuk mematikan bot atau **/on** untuk menyalakan langsung dari HP."
     )
     back_kb = InlineKeyboardMarkup(
         [[InlineKeyboardButton("🔙 Kembali ke Menu Utama", callback_data="menu_main")]]
     )
     await safe_reply(update, text, reply_markup=back_kb)
-
-
 # ---------------------------------------------------------------------------
 # Ingestion & Analysis Execution Flow
 # ---------------------------------------------------------------------------
@@ -427,9 +456,20 @@ async def run_execution_flow(
 # ---------------------------------------------------------------------------
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle incoming text messages and reply buttons."""
+    global _BOT_ACTIVE_STATE
     text = update.message.text.strip()
     if not text:
+        return
+
+    if text.lower() in ("/on", "/resume", "nyalakan", "on"):
+        await cmd_resume(update, context)
+        return
+    elif text.lower() in ("/off", "/pause", "matikan", "off"):
+        await cmd_pause(update, context)
+        return
+
+    if not _BOT_ACTIVE_STATE:
+        await update.message.reply_text("💤 *Bot sedang dimatikan (Mode Tidur).*\nKetik **/on** untuk menyalakan kembali.", parse_mode="Markdown")
         return
 
     # Check Reply Keyboard Buttons
@@ -873,9 +913,12 @@ async def main():
     app.add_handler(CommandHandler("schedule", cmd_schedule))
     app.add_handler(CommandHandler("tracker", cmd_tracker))
     app.add_handler(CommandHandler("bankroll", cmd_bankroll))
+    app.add_handler(CommandHandler("on", cmd_resume))
+    app.add_handler(CommandHandler("off", cmd_pause))
+    app.add_handler(CommandHandler("resume", cmd_resume))
+    app.add_handler(CommandHandler("pause", cmd_pause))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("status", cmd_status))
-
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
