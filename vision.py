@@ -20,22 +20,23 @@ from parser import parse_legs
 logger = logging.getLogger(__name__)
 
 _VISION_PROMPT = """\
-You are an expert sports betting slip parser.
-Extract EVERY single match/bet leg visible across all pages.
+You are an expert sports betting slip and SBOBET odds parser.
+Extract EVERY single match/bet leg visible across all pages or screenshots (e.g. SBOBET, Bet365, Maxbet, 1xBet).
+
 For each leg, return a JSON object with:
 - "home": Home team name (e.g. "Arsenal")
 - "away": Away team name (e.g. "Chelsea")
-- "pick": Selection (e.g. "Over 2.5", "Real Madrid", "Under 2.5", etc.)
-- "odds": Decimal odds (e.g. 1.85)
+- "pick": Selection (e.g. "Over 2.5", "Real Madrid", "Under 2.5", "HDP 0.25", etc.)
+- "odds": Odds as float. If shown in SBOBET Indonesian format (-1.15, -115, 1.05), keep as number or convert to decimal.
 - "market": One of ["1X2", "Over/Under", "Both Teams to Score", "Handicap", "Double Chance", "General Market"]
 
 Return ONLY a valid JSON array of objects.
 Example:
 [
-  {"home": "Arsenal", "away": "Chelsea", "pick": "Over 2.5", "odds": 1.85, "market": "Over/Under"}
+  {"home": "Arsenal", "away": "Chelsea", "pick": "Over 2.5", "odds": 1.85, "market": "Over/Under"},
+  {"home": "Real Madrid", "away": "Barcelona", "pick": "Real Madrid -0.25", "odds": 1.95, "market": "Handicap"}
 ]
 """
-
 
 def _parse_legs_json(raw: str) -> list[Leg]:
     """Parse JSON output into structured Leg domain models."""
@@ -54,11 +55,15 @@ def _parse_legs_json(raw: str) -> list[Leg]:
         try:
             home = str(item.get("home", "")).strip()
             away = str(item.get("away", "")).strip()
-            pick = str(item.get("pick", "")).strip()
-            odds = float(item.get("odds", 1.85))
+            raw_pick = str(item.get("pick", "")).strip()
+            raw_odds = item.get("odds", 1.85)
 
             if not home or not away:
                 continue
+
+            from parser import convert_sbobet_odds_to_decimal, normalize_sbobet_handicap_line
+            odds = convert_sbobet_odds_to_decimal(raw_odds)
+            pick = normalize_sbobet_handicap_line(raw_pick)
 
             key = (home.lower(), away.lower(), pick.lower())
             if key in seen:
@@ -71,16 +76,16 @@ def _parse_legs_json(raw: str) -> list[Leg]:
             except Exception:
                 market = MarketCategory.OTHER
 
-            legs.append(
-                Leg(
-                    home=home,
-                    away=away,
-                    pick=pick or f"{home} Win",
-                    odds=odds,
-                    market=market,
-                    raw=f"{home} vs {away} - {pick} @{odds}",
-                )
+            leg = Leg(
+                home=home,
+                away=away,
+                pick=pick or f"{home} Win",
+                odds=odds,
+                market=market,
+                raw=f"{home} vs {away} - {pick} @{odds}",
             )
+            leg.market = leg.infer_market()
+            legs.append(leg)
         except Exception as item_err:
             logger.warning(f"Error parsing leg item: {item_err}")
             continue
