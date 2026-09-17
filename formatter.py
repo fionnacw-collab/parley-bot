@@ -95,8 +95,8 @@ def format_single_match_analysis(
 def format_parlay_analysis(
     report: ParlayAnalysisReport,
     user_id: int | None = None,
-) -> tuple[str, InlineKeyboardMarkup]:
-    """Format simplified, crystal clear multi-match parlay overview."""
+):
+    """Format simplified, crystal clear multi-match parlay overview with Top 8 picks."""
     bankroll = tracker.get_user_bankroll(user_id) if user_id else 1000000.0
     total_matches = len(report.matches)
 
@@ -107,7 +107,7 @@ def format_parlay_analysis(
         reverse=True,
     )
 
-    top_count = min(5, total_matches)
+    top_count = min(8, total_matches)
     top_picks = sorted_matches[:top_count]
 
     lines = [
@@ -132,8 +132,8 @@ def format_parlay_analysis(
         "",
     ])
 
-    # 1. Conservative Safe Package (Top 3-4 Highest Probability)
-    safe_count = min(3, total_matches)
+    # 1. Conservative Safe Package (Top 4 Highest Probability)
+    safe_count = min(4, total_matches)
     safe_matches = sorted(report.matches, key=lambda m: m.best_sbobet_pick.win_probability, reverse=True)[:safe_count]
     safe_odds = 1.0
     safe_prob = 1.0
@@ -168,8 +168,8 @@ def format_parlay_analysis(
             "",
         ])
 
-    # If more than 5 matches, show clean 1-line list for all matches
-    if total_matches > 5:
+    # If more than 8 matches, show clean 1-line list for all matches
+    if total_matches > 8:
         lines.extend([
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             f"📋 *RINGKASAN LENGKAP {total_matches} LAGA:*",
