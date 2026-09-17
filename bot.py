@@ -97,39 +97,90 @@ def get_main_menu_keyboard() -> InlineKeyboardMarkup:
 # Telegram Reply Helpers
 # ---------------------------------------------------------------------------
 
+def _split_message_chunks(text: str, max_chars: int = 3800) -> list[str]:
+    """Split long text into clean chunks under Telegram's 4096 character limit."""
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks = []
+    current_chunk = []
+    current_len = 0
+
+    for p in text.split("\n\n"):
+        p_len = len(p) + 2
+        if current_len + p_len <= max_chars:
+            current_chunk.append(p)
+            current_len += p_len
+        else:
+            if current_chunk:
+                chunks.append("\n\n".join(current_chunk))
+                current_chunk = []
+                current_len = 0
+
+            if len(p) > max_chars:
+                for l in p.splitlines():
+                    l_len = len(l) + 1
+                    if current_len + l_len <= max_chars:
+                        current_chunk.append(l)
+                        current_len += l_len
+                    else:
+                        if current_chunk:
+                            chunks.append("\n".join(current_chunk))
+                        current_chunk = [l]
+                        current_len = l_len
+            else:
+                current_chunk.append(p)
+                current_len = p_len
+
+    if current_chunk:
+        chunks.append("\n\n".join(current_chunk))
+
+    return chunks
+
+
 async def safe_reply(
     update: Update,
     text: str,
     reply_markup=None,
     parse_mode: str | None = "Markdown",
 ):
-    """Send reply with Markdown, falling back to plain text if syntax fails."""
+    """Send reply with Markdown, automatically splitting long text into multiple messages."""
     target = update.message if update.message else (update.callback_query.message if update.callback_query else None)
     if not target:
         return
 
-    try:
-        if update.callback_query:
-            await update.callback_query.message.reply_text(
-                text,
-                reply_markup=reply_markup,
-                parse_mode=parse_mode,
-            )
-        else:
-            await target.reply_text(
-                text,
-                reply_markup=reply_markup,
-                parse_mode=parse_mode,
-            )
-    except BadRequest as e:
-        if "can't parse entities" in str(e).lower() and parse_mode:
-            if update.callback_query:
-                await update.callback_query.message.reply_text(text, reply_markup=reply_markup, parse_mode=None)
-            else:
-                await target.reply_text(text, reply_markup=reply_markup, parse_mode=None)
-        else:
-            raise e
+    chunks = _split_message_chunks(text, max_chars=3800)
+    num_chunks = len(chunks)
 
+    for idx, chunk in enumerate(chunks):
+        # Attach inline keyboard only to the final message chunk
+        markup = reply_markup if idx == num_chunks - 1 else None
+        try:
+            if update.callback_query and idx == 0 and num_chunks == 1:
+                try:
+                    await update.callback_query.edit_message_text(
+                        chunk,
+                        reply_markup=markup,
+                        parse_mode=parse_mode,
+                    )
+                    continue
+                except Exception:
+                    pass
+
+            await target.reply_text(
+                chunk,
+                reply_markup=markup,
+                parse_mode=parse_mode,
+            )
+        except BadRequest as e:
+            if "can't parse entities" in str(e).lower() and parse_mode:
+                await target.reply_text(chunk, reply_markup=markup, parse_mode=None)
+            else:
+                logger.warning(f"Error sending message chunk: {e}")
+                try:
+                    await target.reply_text(chunk, reply_markup=markup, parse_mode=None)
+                except Exception:
+                    pass
 
 # ---------------------------------------------------------------------------
 # Command Handlers
