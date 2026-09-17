@@ -1,5 +1,5 @@
 """
-models.py — Domain Data Models for SBOBET AI Match & Parlay Suite.
+models.py — Domain Data Models for SBOBET AI Match & Parlay Suite (HDP, O/U, 1X2).
 """
 
 from __future__ import annotations
@@ -11,9 +11,7 @@ from enum import Enum
 class SbobetMarketType(str, Enum):
     ASIAN_HANDICAP = "🚩 Asian Handicap (HDP)"
     OVER_UNDER = "⚽ Over / Under (O/U)"
-    BTTS = "🤝 Both Teams to Score (BTTS)"
-    MATCH_WINNER = "👑 1X2 Match Winner"
-    DOUBLE_CHANCE = "🛡️ Double Chance"
+    MATCH_WINNER = "👑 1X2 / Double Chance"
 
 
 @dataclass
@@ -39,17 +37,15 @@ class PoissonProjection:
     prob_over_25: float
     prob_under_25: float
     prob_over_35: float
-    prob_btts_yes: float
-    prob_btts_no: float
     top_exact_scores: list[tuple[str, float]] = field(default_factory=list)
 
 
 @dataclass
 class SbobetMarketRecommendation:
     market_type: SbobetMarketType
-    selection: str  # e.g. "Arsenal -0.75", "Over 2.5 Goals", "BTTS Yes", "Arsenal Win"
+    selection: str  # e.g. "Arsenal -0.75", "Over 2.5 Goals", "Arsenal Win", "Inter 0.0 (Lek-Lekan)"
     projected_odds: float  # Decimal odds e.g. 1.90
-    sbobet_line_display: str  # e.g. "Voor 3/4 (-1.08)", "O/U 2.5 (1.02)", "BTTS Yes (-1.25)"
+    sbobet_line_display: str  # e.g. "Voor 3/4 (-1.08)", "O/U 2.5 (1.02)", "Handicap 0.0 (1.00)"
     win_probability: float  # e.g. 0.65
     expected_value: float  # e.g. +0.148 (+14.8% EV)
     confidence_pct: int  # e.g. 84
@@ -70,6 +66,7 @@ class DeepMatchAnalysis:
     trap_warning: str = ""
     is_trap: bool = False
     recommended_stake_pct: float = 0.035  # e.g. 3.5% of bankroll
+
 
 @dataclass
 class ParlayAnalysisReport:

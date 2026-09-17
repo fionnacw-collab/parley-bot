@@ -1,10 +1,11 @@
 """
-sbobet_engine.py — Institutional-Grade Quantitative Football Betting Engine.
+sbobet_engine.py — Institutional-Grade Quantitative Football Betting Engine (Pure SBOBET HDP & O/U).
 Implements:
 1. Dixon-Coles Adjusted Bivariate Poisson Model (Gold standard for football probabilities)
 2. Global League & Team Attack/Defense Rating Matrix (EPL, La Liga, Serie A, UCL, Americas, Africa)
 3. Dynamic SBOBET Asian Line Scaling (HDP up to -2.5, O/U up to 3.75 for heavy favorites like Man City)
-4. Natural Sharp Market Selector (Healthy balance of Asian Handicap, Over/Under, BTTS, and 1X2)
+4. Pure SBOBET Market Suite: Asian Handicap (HDP 0.0 to 2.5), Over/Under (O/U 2.0 to 3.75), 1X2 & Double Chance (1X/X2)
+   (Draw No Bet is natively handled as SBOBET Asian Handicap 0.0 Lek-Lekan)
 5. Zero-Vig Fair Odds & Expected Value (+EV) Calculation
 6. 100% Mathematically Coherent Scoreline Resolver
 """
@@ -205,7 +206,6 @@ def compute_dixon_coles_projection(home_name: str, away_name: str) -> PoissonPro
     p_over_15 = 0.0
     p_over_25 = 0.0
     p_over_35 = 0.0
-    p_btts_yes = 0.0
     score_probs: list[tuple[int, int, str, float]] = []
 
     total_mass = 0.0
@@ -238,9 +238,6 @@ def compute_dixon_coles_projection(home_name: str, away_name: str) -> PoissonPro
         if tot > 3.5:
             p_over_35 += p
 
-        if i > 0 and j > 0:
-            p_btts_yes += p
-
     normalized_scores.sort(key=lambda x: x[1], reverse=True)
 
     return PoissonProjection(
@@ -253,8 +250,6 @@ def compute_dixon_coles_projection(home_name: str, away_name: str) -> PoissonPro
         prob_over_25=round(p_over_25, 4),
         prob_under_25=round(1.0 - p_over_25, 4),
         prob_over_35=round(p_over_35, 4),
-        prob_btts_yes=round(p_btts_yes, 4),
-        prob_btts_no=round(1.0 - p_btts_yes, 4),
         top_exact_scores=normalized_scores[:5],
     )
 
@@ -286,18 +281,12 @@ def resolve_coherent_predicted_score(
     scores.sort(key=lambda x: x[3], reverse=True)
     pick_str = best_pick.selection.lower()
 
-    if "over 3.5" in pick_str:
-        valid = [s for s in scores if (s[0] + s[1]) >= 4]
-    elif "over 3.0" in pick_str:
+    if "over 3.5" in pick_str or "over 3.0" in pick_str:
         valid = [s for s in scores if (s[0] + s[1]) >= 4]
     elif "over 2.5" in pick_str or "over 2.25" in pick_str:
         valid = [s for s in scores if (s[0] + s[1]) >= 3]
     elif "under" in pick_str:
         valid = [s for s in scores if (s[0] + s[1]) <= 2]
-    elif "btts: yes" in pick_str or "btts yes" in pick_str:
-        valid = [s for s in scores if s[0] >= 1 and s[1] >= 1]
-    elif "btts: no" in pick_str or "btts no" in pick_str:
-        valid = [s for s in scores if s[0] == 0 or s[1] == 0]
     elif "-2" in pick_str:
         if home_name.lower() in pick_str:
             valid = [s for s in scores if (s[0] - s[1]) >= 3]
@@ -308,6 +297,9 @@ def resolve_coherent_predicted_score(
             valid = [s for s in scores if s[0] > s[1]]
         else:
             valid = [s for s in scores if s[1] > s[0]]
+    elif "0.0" in pick_str or "lek-lekan" in pick_str:
+        # Handicap 0.0: Home win or Draw
+        valid = [s for s in scores if s[0] >= s[1]]
     elif "1x" in pick_str or "or draw" in pick_str:
         valid = [s for s in scores if s[0] >= s[1]]
     elif "x2" in pick_str:
@@ -324,7 +316,7 @@ def resolve_coherent_predicted_score(
 
 
 # ---------------------------------------------------------------------------
-# 4. SBOBET Asian Market Suite Generator with Dynamic Scaling & Sharp Variety
+# 4. Pure SBOBET Market Suite Generator (HDP, O/U, 1X2 - NO BTTS)
 # ---------------------------------------------------------------------------
 
 def generate_sbobet_markets(
@@ -333,30 +325,29 @@ def generate_sbobet_markets(
     poisson: PoissonProjection,
 ) -> tuple[SbobetMarketRecommendation, list[SbobetMarketRecommendation]]:
     """
-    Generate all 4 standard SBOBET Asian markets with dynamic scaling and balanced sharp selection:
-    1. Asian Handicap (HDP)
-    2. Over / Under (O/U)
-    3. Both Teams to Score (BTTS)
-    4. 1X2 Match Winner
+    Generate authentic SBOBET Asian markets (HDP, O/U, 1X2/Double Chance):
+    1. Asian Handicap (HDP) — from 0.0 Lek-lekan to 2.25 Voor
+    2. Over / Under (O/U) — from 2.0 to 3.75 Goals
+    3. 1X2 Match Winner & Double Chance (1X / X2)
     """
     markets: list[SbobetMarketRecommendation] = []
     xg_diff = poisson.home_xg - poisson.away_xg
     total_xg = poisson.home_xg + poisson.away_xg
 
-    # 1. Asian Handicap (HDP) Pricing & Dynamic Line
+    # 1. Asian Handicap (HDP) Pricing & Dynamic SBOBET Voor
     if xg_diff >= 2.2:
         hdp_line = f"{home} -2.25"
         hdp_display = f"{home} Voor 2 1/4 (-1.08)"
         hdp_win_prob = 0.65
         hdp_odds = 1.95
         hdp_reason = f"{home} sangat superior (selisih xG +{xg_diff:.2f}), diproyeksikan menang telak 3+ gol."
-    elif xg_diff >= 1.5:
+    elif xg_diff >= 1.4:
         hdp_line = f"{home} -1.5"
         hdp_display = f"{home} Voor 1 1/2 (-1.05)"
         hdp_win_prob = 0.66
         hdp_odds = 1.92
         hdp_reason = f"{home} dominan di kandang (selisih xG +{xg_diff:.2f}), aman melewati voor 1.5."
-    elif xg_diff >= 0.8:
+    elif xg_diff >= 0.75:
         hdp_line = f"{home} -0.75"
         hdp_display = f"{home} Voor 3/4 (-1.02)"
         hdp_win_prob = 0.65
@@ -368,24 +359,32 @@ def generate_sbobet_markets(
         hdp_win_prob = 0.62
         hdp_odds = 1.88
         hdp_reason = f"Laga berimbang dengan sedikit keunggulan kandang untuk {home}."
-    elif xg_diff <= -1.5:
+    elif xg_diff <= -1.4:
         hdp_line = f"{home} +1.5"
         hdp_display = f"{home} Diberi Voor 1 1/2 (-1.05)"
         hdp_win_prob = 0.65
         hdp_odds = 1.90
         hdp_reason = f"{away} sangat diunggulkan, namun voor 1.5 memberi proteksi tebal untuk {home}."
-    elif xg_diff <= -0.8:
+    elif xg_diff <= -0.75:
         hdp_line = f"{home} +0.75"
         hdp_display = f"{home} Diberi Voor 3/4 (-1.08)"
         hdp_win_prob = 0.64
         hdp_odds = 1.88
         hdp_reason = f"{home} defensif alot di kandang, mampu menahan gempuran {away}."
+    elif xg_diff <= -0.3:
+        hdp_line = f"{away} -0.25"
+        hdp_display = f"{away} Voor 1/4 (1.02)"
+        hdp_win_prob = 0.62
+        hdp_odds = 1.88
+        hdp_reason = f"{away} sedikit lebih diunggulkan di laga tandang."
     else:
-        hdp_line = f"{home} 0.0 (Lek-Lekan)"
-        hdp_display = "Pasaran Lek-Lekan (0.0)"
-        hdp_win_prob = 0.60
+        # SBOBET 0.0 (Lek-Lekan) — Draw = Full Refund (Native Draw No Bet replacement)
+        hdp_team = home if poisson.prob_home_win >= poisson.prob_away_win else away
+        hdp_line = f"{hdp_team} 0.0 (Lek-Lekan)"
+        hdp_display = f"{hdp_team} Handicap 0.0 (Draw = Refund)"
+        hdp_win_prob = round(max(poisson.prob_home_win, poisson.prob_away_win) + (poisson.prob_draw * 0.5), 2)
         hdp_odds = 1.90
-        hdp_reason = f"Duel seimbang tanpa voor (0.0)."
+        hdp_reason = f"Duel seimbang tanpa voor (0.0). Jika laga berakhir imbang (Draw), modal kembali (Refund)."
 
     hdp_ev = round((hdp_win_prob * hdp_odds) - 1.0, 3)
     markets.append(
@@ -408,19 +407,19 @@ def generate_sbobet_markets(
         ou_prob = 0.62
         ou_odds = 1.92
         ou_reason = f"Total xG sangat tinggi ({total_xg:.2f} gol), potensi pesta gol."
-    elif total_xg >= 3.1:
+    elif total_xg >= 3.0:
         ou_line = "Over 3.0 Goals"
         ou_display = "O/U 3.0 (-1.10)"
         ou_prob = 0.63
         ou_odds = 1.88
         ou_reason = f"Total xG tinggi ({total_xg:.2f} gol), kedua tim agresif."
-    elif total_xg >= 2.5:
+    elif total_xg >= 2.45:
         ou_line = "Over 2.5 Goals"
         ou_display = "O/U 2.5 (1.04)"
         ou_prob = 0.60
         ou_odds = 1.85
         ou_reason = f"Total xG wajar ({total_xg:.2f} gol), tren gol normal."
-    elif total_xg <= 2.1:
+    elif total_xg <= 2.05:
         ou_line = "Under 2.25 Goals"
         ou_display = "O/U 2-2.5 (-1.08)"
         ou_prob = 0.65
@@ -447,36 +446,7 @@ def generate_sbobet_markets(
         )
     )
 
-    # 3. Both Teams to Score (BTTS) Pricing
-    p_btts_val = poisson.prob_btts_yes
-    if p_btts_val >= 0.55:
-        btts_line = "BTTS: Yes (Kedua Tim Cetak Gol)"
-        btts_display = "BTTS Yes (-1.18)"
-        btts_prob = min(0.75, max(0.35, p_btts_val))
-        btts_odds = 1.72
-        btts_reason = f"Kedua tim memiliki daya serang seimbang, peluang kedua tim mencetak gol {int(btts_prob*100)}%."
-    else:
-        btts_line = "BTTS: No (Hanya 1 Tim Cetak Gol)"
-        btts_display = "BTTS No (1.06)"
-        btts_prob = min(0.75, max(0.35, 1.0 - p_btts_val))
-        btts_odds = 2.05
-        btts_reason = f"Salah satu tim diproyeksikan mencatat clean sheet."
-
-    btts_ev = round((btts_prob * btts_odds) - 1.0, 3)
-    markets.append(
-        SbobetMarketRecommendation(
-            market_type=SbobetMarketType.BTTS,
-            selection=btts_line,
-            projected_odds=btts_odds,
-            sbobet_line_display=btts_display,
-            win_probability=btts_prob,
-            expected_value=btts_ev,
-            confidence_pct=int(btts_prob * 100),
-            reasoning=btts_reason,
-        )
-    )
-
-    # 4. 1X2 Match Winner Pricing
+    # 3. 1X2 Match Winner & Double Chance Pricing
     p_home_win = min(0.85, max(0.15, round(poisson.home_xg / (total_xg * 0.95), 2)))
     if p_home_win >= 0.65:
         m1x2_line = f"{home} Win"
@@ -503,18 +473,13 @@ def generate_sbobet_markets(
         )
     )
 
-    # Balanced Sharp Market Selection: Weight Asian Handicap higher for big xG diffs
+    # Balanced Sharp Selection: Focus on Asian Handicap & Over/Under
     def _market_priority_score(m: SbobetMarketRecommendation) -> float:
         base_score = (m.expected_value * 0.55) + (m.win_probability * 0.45)
-        # Favor Handicap for clear favorites
-        if m.market_type == SbobetMarketType.ASIAN_HANDICAP and abs(xg_diff) >= 0.7:
-            return base_score * 1.25
-        # Favor Over/Under for high or low total xG
-        if m.market_type == SbobetMarketType.OVER_UNDER and (total_xg >= 3.3 or total_xg <= 2.2):
+        if m.market_type == SbobetMarketType.ASIAN_HANDICAP:
+            return base_score * 1.25  # High priority for Asian Handicap
+        if m.market_type == SbobetMarketType.OVER_UNDER and (total_xg >= 3.0 or total_xg <= 2.1):
             return base_score * 1.20
-        # Favor BTTS for even goal exchanges
-        if m.market_type == SbobetMarketType.BTTS and abs(xg_diff) < 0.4 and total_xg >= 2.6:
-            return base_score * 1.15
         return base_score
 
     best_market = max(markets, key=_market_priority_score)
